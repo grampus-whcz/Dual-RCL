@@ -1,0 +1,66 @@
+{
+  "TradeAnalysis": {
+    "assistant_role_name": "Trade Analysis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: During this period, the overall transaction volume dropped by 5.67% year-on-year. At the same time, a decline in transaction performance was detected, lasting 9 seconds, and multiple transaction codes were abnormal.",
+      "Please output your observation of trade anomaly events after <INFO>, within 3 sentences.",
+      "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+    ]
+  },
+  "LogAnalysis": {
+    "assistant_role_name": "Log Analysis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: Multiple clusters have abnormal numbers of garbage collections (CG) and abnormal latency, including the order cluster, location service cluster, and order service API cluster, etc.",
+      "Please output your observation of log anomaly events after <INFO>, within 3 sentences.",
+      "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+    ]
+  },
+  "TraceAnalysis": {
+    "assistant_role_name": "Trace Analysis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: A large number of method access failures were detected, accounting for more than 60.08%. Additionally, a small number of database write errors were found, violating the database's unique constraints.",
+      "Please output your observation of trace anomaly events after <INFO>, within 3 sentences.",
+      "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+    ]
+  },
+  "MetricAnalysis": {
+    "assistant_role_name": "Metric Analysis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: Detected an increase in network traffic to the WEB cluster, and an increase in the IO activity level and a surge in CPU usage for the coupon grabbing basic service API cluster.",
+      "Please output your observation of trade anomaly events  after <INFO>, within 3 sentences.",
+      "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+    ]
+  },
+  "CMDBAnalysis": {
+    "assistant_role_name": "CMDB Analysis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: The downstream cluster of the in network traffic web cluster is the coupon grabbing basic service API cluster.",
+      "This is the observation from the trade analysis expert: {trade_anomalies}",
+      "This is the observation from the log analysis expert: {log_anomalies}",
+      "This is the observation from the trace analysis expert: {trace_anomalies}",
+      "This is the observation from the metric analysis expert: {metric_anomalies}",
+      "Please output relevant information about the CMDB after <INFO>, within 3 sentences.",
+      "Note that you must ONLY talk about the CMDB information and do not discuss anything else!"
+    ]
+  },
+  "RootCauseAnalysis": {
+    "assistant_role_name": "Fault Diagnosis Expert",
+    "user_role_name": "AIOps Copilot",
+    "phase_prompt": [
+      "Knowledge: The root cause of the problem is that the WEB cluster has a large number of requests, which causes the coupon grabbing basic service API cluster to have a high CPU usage.",
+      "The history countermeasure is to apply a patch to the coupon grabbing basic service API cluster to reduce the CPU usage.",
+      "This is the observation from the trade analysis expert: {trade_anomalies}",
+      "This is the observation from the log analysis expert: {log_anomalies}",
+      "This is the observation from the trace analysis expert: {trace_anomalies}",
+      "This is the observation from the metric analysis expert: {metric_anomalies}",
+      "This is the observation from the CMDB analysis expert: {cmdb_info}",
+      "Please output your root cause analysis between <ROOT CAUSE> and </ROOT CAUSE> , within 3 sentences, and output your suggestions between <SUGGESTION> and </SUGGESTION>.",
+      "Note that you must ONLY talk about your suggestions and do not discuss anything else! If your job is over and you have no comment on them, return only one line like \"<INFO> Finished\"."
+    ]
+  }
+}

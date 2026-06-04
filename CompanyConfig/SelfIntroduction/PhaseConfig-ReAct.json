@@ -1,0 +1,42 @@
+{
+    "LogAnalysis": {
+        "assistant_role_name": "Log Analysis Expert",
+        "user_role_name": "AIOps Copilot",
+        "phase_prompt": [
+            "Knowledge: ",
+            "Please output your observation of log anomaly events after <INFO>, within 6 sentences.The output format is:\n Observation:...\n Reasoning:...\n Final Answer:...",
+            "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+        ]
+    },
+    "TraceAnalysis": {
+        "assistant_role_name": "Trace Analysis Expert",
+        "user_role_name": "AIOps Copilot",
+        "phase_prompt": [
+            "Knowledge:",
+            "Please output your observation of trace anomaly events and detailed reasoning analysis of root cause in detail after <INFO>,more than 6 sentences.The output format is:Observation: ... Reasoning: ... Final Answer: ...",
+            "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+        ]
+    },
+    "MetricAnalysis": {
+        "assistant_role_name": "Metric Analysis Expert",
+        "user_role_name": "AIOps Copilot",
+        "phase_prompt": [
+            "Knowledge: ",
+            "Please output your observation of metric anomaly events and detailed reasoning analysis of root metric in detail after <INFO>,more than 6 sentences.The output format is:Observation: ... Reasoning: ... Final Answer: ...",
+            "Note that you must ONLY talk about your observations and suggestions and do not discuss anything else!"
+        ]
+    },
+    "RootCauseAnalysis": {
+        "assistant_role_name": "Fault Diagnosis Expert",
+        "user_role_name": "AIOps Copilot",
+        "phase_prompt": [
+            "Knowledge: Please generate root service results based on TraceAgent's Trace root cause analysis.",
+            "The history countermeasure is to apply a patch to the coupon grabbing basic service API cluster to reduce the CPU usage.",
+            "This is the observation from the log analysis expert: {log_anomalies}",
+            "This is the observation from the trace analysis expert: {trace_anomalies}",
+            "This is the observation from the metric analysis expert: {metric_anomalies}",
+            "Please output your root cause analysis between <ROOT CAUSE> and </ROOT CAUSE> , within 3 sentences, and output your suggestions between <SUGGESTION> and </SUGGESTION>.",
+            "Note that you must ONLY talk about your suggestions and do not discuss anything else! If your job is over and you have no comment on them, return only one line like \"<INFO> Finished\"."
+        ]
+    }
+}

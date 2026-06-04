@@ -1,0 +1,16 @@
+colorama
+Flask
+Flask-SocketIO
+importlib-metadata
+numpy
+openai
+regex
+requests
+tenacity
+tiktoken
+Werkzeug
+Markdown
+Pillow
+Wikipedia-API
+beautifulsoup4
+qianfan
