@@ -35,3 +35,13 @@ python run.py \
 #   --task 'At 2021/07/01 11:50 have exceptions in the microservices system. What are these exceptions? Please output an exception analysis.' \
 #   --name test_0701 \
 #   --rca-method tvdig --tvdig-model ./tvdig_checkpoint
+
+# # 用现有日志评估（A@k + Latency）
+# python -m evaluation.run_evaluation \
+#     --log experiments_a.log \
+#     --gt mobservice1
+
+# # 或批量评估 Report/ 目录下的所有日志
+# python -m evaluation.run_evaluation \
+#     --log-dir Report/ \
+#     --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/

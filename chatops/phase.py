@@ -309,6 +309,16 @@ class Phase(ABC):
                           placeholders=self.phase_env,
                           model_type=self.model_type)
         chat_env = self.update_chat_env(chat_env)
+
+        # --- [EVAL] Emit structured agent output for evaluation ---
+        import json as _json
+        _eval_record = {
+            "type": "agent_output",
+            "agent": self.phase_name,
+            "text": str(self.seminar_conclusion)[:2000],
+        }
+        print(f"[EVAL] {_json.dumps(_eval_record, ensure_ascii=False)}")
+
         return chat_env
 
 

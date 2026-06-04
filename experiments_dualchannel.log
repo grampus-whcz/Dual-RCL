@@ -1,0 +1,19 @@
+nohup: ignoring input
+============================================================
+ Dual-Channel RCA (Final Improved Version)
+ Model:          ollama-qwen3-14b
+ Anomaly method: usad
+ Anomaly epochs: 5
+ Dates:          2021-07-01 2021-07-02 2021-07-03
+ Mode:           双通道 RCA + LLM 冲突裁决
+============================================================
+
+>>> 2021-07-01 11:16 <<<
+/root/shared-nvme/work/code/RCA/2026/SoC-RCA/run.py:9: DeprecationWarning: `langchain-community` is being sunset and is no longer actively maintained. See https://github.com/langchain-ai/langchain-community/issues/674 for details and migration guidance toward standalone integration packages.
+  from langchain_community.document_loaders import CSVLoader
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:441: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/hub.py:123: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:309: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(

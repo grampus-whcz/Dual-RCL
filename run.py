@@ -15,6 +15,7 @@ from langchain_classic.chains import ConversationalRetrievalChain
 import json
 
 import time
+import json as _json
 import pandas as pd
 import re
 import time
@@ -55,6 +56,17 @@ _handler.setFormatter(logging.Formatter(
 _handler.setLevel(logging.INFO)
 logger.addHandler(_handler)
 logger.setLevel(logging.INFO)
+
+
+def _eval_log(record: dict):
+    """Print a structured [EVAL] line for the evaluation module to parse.
+
+    Each line starts with [EVAL] followed by a JSON dict containing
+    structured metric data.  The evaluation.log_parser module extracts
+    these lines to compute Paper [171] metrics (A@k, BLEU-4, ROUGE-L,
+    G-sim, latency).
+    """
+    print(f"[EVAL] {_json.dumps(record, ensure_ascii=False)}")
 
 
 def _phase_banner(phase: str, title: str):
@@ -290,6 +302,7 @@ def main(args: argparse.Namespace):
         logger.info(f"Task parsed: date={date_result}, time={time_result}")
         print(f"Data: {date_result}")
         print(f"Time: {time_result}")
+        _eval_log({"type": "task_parsed", "date": date_result, "time": time_result})
     else:
         logger.warning("No datetime found in task description")
         print("Not Found.")
@@ -448,6 +461,13 @@ def main(args: argparse.Namespace):
     logger.info(f"  MEPFL top-5 root services: {root_se}")
     _phase_done("Phase 2", t0_p2)
 
+    _eval_log({
+        "type": "localization",
+        "method": "MEPFL",
+        "predictions": root_service[:5],
+        "ground_truth": "",  # filled later if available
+    })
+
     # ------------------------------------------------------------------
     #  Phase 3: Metric Data Loading
     # ------------------------------------------------------------------
@@ -573,6 +593,13 @@ def main(args: argparse.Namespace):
     logger.info(f"  [5A] Univariate root metrics: {root_metric_uni[:200]}")
     print(f"  Univariate root metrics: {root_metric_uni[:200]}...")
 
+    _eval_log({
+        "type": "root_metrics",
+        "channel": "univariate",
+        "method": "PCMCI+RandomWalk",
+        "metrics": root_metric_uni[:500],
+    })
+
     # --- 5B: Multivariate RCA (multi eta → random walk) -------------
     root_metric_multi = None
     if multi_results is not None and multi_eta is not None:
@@ -582,6 +609,13 @@ def main(args: argparse.Namespace):
         root_metric_multi = root_kpi(data_head, gamma_multi)
         logger.info(f"  [5B] Multivariate root metrics: {root_metric_multi[:200]}")
         print(f"  Multivariate root metrics: {root_metric_multi[:200]}...")
+
+        _eval_log({
+            "type": "root_metrics",
+            "channel": "multivariate",
+            "method": args.anomaly_method,
+            "metrics": root_metric_multi[:500],
+        })
     else:
         logger.info("  [5B] Multivariate RCA SKIPPED (no multivariate detection)")
         print("\n  [5B] Multivariate RCA SKIPPED (no multivariate detection)")
@@ -796,6 +830,18 @@ def main(args: argparse.Namespace):
     _run_chatchain(args, config_path, config_phase_path, config_role_path,
                    phase_t0=t0_p9)
 
+    # --- Evaluation: end-to-end latency ---
+    total_elapsed = time.time() - t0_p1
+    _eval_log({
+        "type": "e2e_latency",
+        "duration_s": round(total_elapsed, 2),
+        "date": date_result,
+        "time": time_result,
+        "anomaly_method": args.anomaly_method,
+        "rca_method": args.rca_method,
+        "model": args.model,
+    })
+
 
 def _run_chatchain(
     args: argparse.Namespace,
@@ -854,6 +900,22 @@ def _run_chatchain(
     print(f"  [ChatChain] Starting multi-agent reasoning (model={args.model})...")
     chat_chain.execute_chain()
     chat_chain.post_processing()
+
+    # --- Evaluation: extract agent outputs from ChatChain log ---
+    try:
+        log_path = chat_chain.log_path
+        if log_path and os.path.exists(log_path):
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as lf:
+                log_content = lf.read()
+            # Extract agent outputs by searching for phase sections
+            _eval_log({
+                "type": "chatchain_log",
+                "log_path": log_path,
+                "log_size": len(log_content),
+            })
+    except Exception:
+        pass
+
     if phase_t0 is not None:
         _phase_done("Phase 9", phase_t0)
     logger.info("=" * 60)
