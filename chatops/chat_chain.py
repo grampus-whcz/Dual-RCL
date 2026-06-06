@@ -29,6 +29,7 @@ class ChatChain:
             namespace: str = None,
             model_type: ModelType = ModelType.GPT_3_5_TURBO,
             docs_path: str | os.PathLike[str] = None,
+            report_dir: str | os.PathLike[str] | None = None,
     ):
         # load config file
         self.config_path = pathlib.Path(config_path)
@@ -38,6 +39,7 @@ class ChatChain:
         self.namespace = namespace
         self.model_type = model_type
         self.docs_path = pathlib.Path(docs_path)
+        self.report_dir = pathlib.Path(report_dir) if report_dir else pathlib.Path(__file__).parent.parent / 'Report'
 
         self.config = json.loads(self.config_path.read_text(encoding='utf-8'))
         self.config_phase = json.loads(self.config_phase_path.read_text(encoding='utf-8'))
@@ -167,7 +169,7 @@ class ChatChain:
         """
         start_time = now()
         case_name_full = '_'.join([self.case_name, self.namespace, start_time])
-        directory = pathlib.Path(__file__).parent.parent / 'Report'
+        directory = self.report_dir
         directory.mkdir(exist_ok=True, parents=True)
         log_path = directory / f'{case_name_full}.log'
         return start_time, log_path
@@ -176,7 +178,7 @@ class ChatChain:
         """
         Remove useless files and log some global config settings
         """
-        directory = pathlib.Path(__file__).parent.parent / 'Report'
+        directory = self.report_dir
 
         if self.chat_env.config.clear_structure:
             for child in directory.iterdir():
@@ -258,9 +260,11 @@ class ChatChain:
         time.sleep(1)
 
         case_name_full = '_'.join([self.case_name, self.namespace, self.start_time])
+        report_subdir = self.report_dir / case_name_full
+        report_subdir.mkdir(parents=True, exist_ok=True)
         shutil.move(
             self.log_path,
-            pathlib.Path(__file__).parent.parent / 'Report' / case_name_full / f'{case_name_full}.log'
+            report_subdir / f'{case_name_full}.log'
         )
 
     # @staticmethod

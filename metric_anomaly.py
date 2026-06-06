@@ -341,4 +341,375 @@ def generate_metric_describe(clf,path,services):
     
                 
     return anomaly1
+
+
+# =====================================================================
+# Enhanced Metric Description Generator
+# Implements Paper [171] Algorithm 1: statistical feature extraction
+# + 11 pattern-specific templates + severity classification
+# =====================================================================
+
+# 11 pattern types matching the CNN classifier output
+ANOMALY_TYPES = [
+    'Level shift up', 'Level shift down', 'Steady increase', 'Steady decrease',
+    'Single spike', 'Single dip', 'Transient level shift up',
+    'Transient level shift down', 'Multiple spikes', 'Multiple dips', 'Fluctuations',
+]
+
+
+def _classify_severity(score: float) -> str:
+    """Classify anomaly severity based on deviation score.
+
+    Args:
+        score: Anomaly deviation score (value-mean)/std.
+
+    Returns:
+        Severity level string.
+    """
+    if score >= 5.0:
+        return 'critical'
+    elif score >= 3.0:
+        return 'severe'
+    elif score >= 2.0:
+        return 'moderate'
+    else:
+        return 'mild'
+
+
+def _count_peaks(values: list) -> int:
+    """Count the number of local peaks in a value series."""
+    peaks = 0
+    for i in range(1, len(values) - 1):
+        if values[i] > values[i-1] and values[i] > values[i+1]:
+            peaks += 1
+    return peaks
+
+
+def _count_dips(values: list) -> int:
+    """Count the number of local dips in a value series."""
+    dips = 0
+    for i in range(1, len(values) - 1):
+        if values[i] < values[i-1] and values[i] < values[i+1]:
+            dips += 1
+    return dips
+
+
+def _generate_pattern_description(
+    pattern_type: str,
+    kpi: str,
+    service: str,
+    values: list,
+    ymean: float,
+    ystd: float,
+    start: str,
+    end: str,
+    score: float,
+) -> str:
+    """Generate a pattern-specific description using rich templates.
+
+    Each template emphasises the characteristic of that pattern type:
+    - Spikes/dips → suddenness, peak value
+    - Level shifts → sustained change, before/after comparison
+    - Trends → direction, magnitude of change over time
+    - Fluctuations → volatility, range
+    """
+    arr = np.array(values)
+    val_max = float(np.max(arr))
+    val_min = float(np.min(arr))
+    val_mean = float(np.mean(arr))
+    val_std = float(np.std(arr))
+    duration_sec = 0
+    try:
+        duration_sec = int(end.replace(':', '').replace('-', '').replace(' ', '')[-6:]) - \
+                       int(start.replace(':', '').replace('-', '').replace(' ', '')[-6:])
+        if duration_sec < 0:
+            duration_sec += 240000  # cross-midnight
+    except Exception:
+        duration_sec = 0
+    duration_min = abs(duration_sec) // 10000 * 60 + (abs(duration_sec) % 10000) // 100
+
+    severity = _classify_severity(score)
+    baseline = values[0]
+    n_sigma = score * 2  # approximate sigma deviation
+
+    # Change percentage from baseline
+    if abs(baseline) > 1e-10:
+        change_pct = abs((val_max - baseline) / baseline) * 100
+    else:
+        change_pct = abs(val_max - baseline) * 100
+
+    # Service/metric extraction
+    metric_name = kpi.split('_')[-1] if '_' in kpi else kpi
+
+    # Pattern-specific descriptions
+    if pattern_type == 'Single spike':
+        desc = (
+            f"The {kpi} metric for service {service} exhibited a sudden spike "
+            f"reaching {val_max:.4f}, which is approximately {n_sigma:.1f}σ above the "
+            f"historical mean of {ymean:.4f}. The spike occurred around {start}, "
+            f"rising sharply from {baseline:.4f} and returning to normal levels "
+            f"within approximately {duration_min} minutes."
+        )
+
+    elif pattern_type == 'Single dip':
+        desc = (
+            f"The {kpi} metric for service {service} exhibited a sudden dip "
+            f"to {val_min:.4f}, which is approximately {n_sigma:.1f}σ below the "
+            f"historical mean of {ymean:.4f}. The dip occurred around {start}, "
+            f"dropping from {baseline:.4f} and recovering within approximately "
+            f"{duration_min} minutes."
+        )
+
+    elif pattern_type == 'Multiple spikes':
+        n_peaks = _count_peaks(values)
+        desc = (
+            f"The {kpi} metric for service {service} displayed {n_peaks} repeated "
+            f"spikes over a {duration_min}-minute period starting at {start}. "
+            f"Peak values reached {val_max:.4f} (mean: {ymean:.4f}, σ: {ystd:.4f}), "
+            f"suggesting intermittent load bursts or resource contention. "
+            f"The overall deviation score is {score:.2f}."
+        )
+
+    elif pattern_type == 'Multiple dips':
+        n_dips = _count_dips(values)
+        desc = (
+            f"The {kpi} metric for service {service} displayed {n_dips} repeated "
+            f"dips over a {duration_min}-minute period starting at {start}. "
+            f"The lowest value reached {val_min:.4f} (mean: {ymean:.4f}, σ: {ystd:.4f}), "
+            f"suggesting intermittent service degradation or resource starvation. "
+            f"The overall deviation score is {score:.2f}."
+        )
+
+    elif pattern_type == 'Level shift up':
+        # Compute pre-shift and post-shift means
+        mid = len(values) // 2
+        pre_mean = float(np.mean(arr[:mid]))
+        post_mean = float(np.mean(arr[mid:]))
+        if abs(pre_mean) > 1e-10:
+            shift_pct = (post_mean - pre_mean) / abs(pre_mean) * 100
+        else:
+            shift_pct = (post_mean - pre_mean) * 100
+        desc = (
+            f"The {kpi} metric for service {service} shifted upward by "
+            f"approximately {shift_pct:.1f}%, from a pre-shift average of "
+            f"{pre_mean:.4f} to a post-shift average of {post_mean:.4f}. "
+            f"This sustained level shift started around {start} and persisted "
+            f"for at least {duration_min} minutes. The historical mean was "
+            f"{ymean:.4f} (σ: {ystd:.4f}), deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Level shift down':
+        mid = len(values) // 2
+        pre_mean = float(np.mean(arr[:mid]))
+        post_mean = float(np.mean(arr[mid:]))
+        if abs(pre_mean) > 1e-10:
+            shift_pct = (pre_mean - post_mean) / abs(pre_mean) * 100
+        else:
+            shift_pct = (pre_mean - post_mean) * 100
+        desc = (
+            f"The {kpi} metric for service {service} shifted downward by "
+            f"approximately {shift_pct:.1f}%, from a pre-shift average of "
+            f"{pre_mean:.4f} to a post-shift average of {post_mean:.4f}. "
+            f"This sustained level drop started around {start} and persisted "
+            f"for at least {duration_min} minutes. The historical mean was "
+            f"{ymean:.4f} (σ: {ystd:.4f}), deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Steady increase':
+        first_val = values[0]
+        last_val = values[-1]
+        if abs(first_val) > 1e-10:
+            inc_pct = (last_val - first_val) / abs(first_val) * 100
+        else:
+            inc_pct = (last_val - first_val) * 100
+        desc = (
+            f"The {kpi} metric for service {service} showed a steady upward trend, "
+            f"increasing by {inc_pct:.1f}% from {first_val:.4f} to {last_val:.4f} "
+            f"over a {duration_min}-minute period starting at {start}. "
+            f"The peak value was {val_max:.4f}, reaching approximately {n_sigma:.1f}σ "
+            f"above the historical mean ({ymean:.4f}). Deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Steady decrease':
+        first_val = values[0]
+        last_val = values[-1]
+        if abs(first_val) > 1e-10:
+            dec_pct = (first_val - last_val) / abs(first_val) * 100
+        else:
+            dec_pct = (first_val - last_val) * 100
+        desc = (
+            f"The {kpi} metric for service {service} showed a steady downward trend, "
+            f"decreasing by {dec_pct:.1f}% from {first_val:.4f} to {last_val:.4f} "
+            f"over a {duration_min}-minute period starting at {start}. "
+            f"The lowest value was {val_min:.4f}, approximately {n_sigma:.1f}σ "
+            f"below the historical mean ({ymean:.4f}). Deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Transient level shift up':
+        desc = (
+            f"The {kpi} metric for service {service} exhibited a transient upward "
+            f"level shift, temporarily rising from {baseline:.4f} to a peak of "
+            f"{val_max:.4f} around {start}, before partially recovering. "
+            f"The peak was approximately {n_sigma:.1f}σ above the historical mean "
+            f"({ymean:.4f}, σ: {ystd:.4f}). Duration: approximately {duration_min} minutes. "
+            f"Deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Transient level shift down':
+        desc = (
+            f"The {kpi} metric for service {service} exhibited a transient downward "
+            f"level shift, temporarily dropping from {baseline:.4f} to {val_min:.4f} "
+            f"around {start}, before partially recovering. "
+            f"The dip was approximately {n_sigma:.1f}σ below the historical mean "
+            f"({ymean:.4f}, σ: {ystd:.4f}). Duration: approximately {duration_min} minutes. "
+            f"Deviation score: {score:.2f}."
+        )
+
+    elif pattern_type == 'Fluctuations':
+        val_range = val_max - val_min
+        cv = val_std / abs(val_mean) if abs(val_mean) > 1e-10 else val_std
+        desc = (
+            f"The {kpi} metric for service {service} displayed irregular fluctuations "
+            f"over a {duration_min}-minute period starting at {start}. "
+            f"The metric oscillated between {val_min:.4f} and {val_max:.4f} "
+            f"(range: {val_range:.4f}, coefficient of variation: {cv:.2f}). "
+            f"Historical mean: {ymean:.4f}, σ: {ystd:.4f}. "
+            f"Deviation score: {score:.2f}. This volatile behavior may indicate "
+            f"unstable resource allocation or oscillating load."
+        )
+
+    else:
+        # Fallback: generic description
+        desc = (
+            f"The {kpi} metric for service {service} is abnormal with pattern "
+            f"'{pattern_type}', from {start} to {end}. "
+            f"Value range: [{val_min:.4f}, {val_max:.4f}], historical mean: {ymean:.4f}. "
+            f"Deviation score: {score:.2f}."
+        )
+
+    # Append severity tag
+    severity_map = {
+        'mild': '[MILD]',
+        'moderate': '[MODERATE]',
+        'severe': '[SEVERE]',
+        'critical': '[CRITICAL]',
+    }
+    desc += f" Severity: {severity_map.get(severity, '[UNKNOWN]')}."
+
+    return desc
+
+
+def enhance_metric_describe(clf, path, services, data_head=None):
+    """Enhanced metric anomaly description generator.
+
+    Implements Paper [171] Algorithm 1 with:
+      - Statistical feature extraction (mean, std, peak, change %, duration)
+      - 11 pattern-specific description templates
+      - Anomaly severity classification (mild/moderate/severe/critical)
+      - Cross-metric correlation hints for same-service anomalies
+
+    Args:
+        clf: Trained CNNClassifier instance.
+        path: Path to the metric fault directory (containing service subdirs).
+        services: List of root cause service names to filter metrics.
+        data_head: Optional list of all metric names (for cross-reference).
+
+    Returns:
+        List of enhanced anomaly description strings.
+    """
+    anomaly_descriptions = []
+    # Track per-service anomaly count for cross-metric correlation hints
+    service_anomaly_count = {}
+
+    listt = os.listdir(path)
+    for name in listt:
+        if '.ipynb_' in name:
+            continue
+        # Filter: only process metrics for top-5 root services
+        f = 0
+        for root in services[:5]:
+            if root in name:
+                f = 1
+        if f == 0:
+            continue
+
+        ps = os.path.join(path, name)
+        files = os.listdir(ps)
+        for fi in files:
+            if '.ipynb_' in fi:
+                continue
+            try:
+                df = pd.read_csv(os.path.join(ps, fi))
+                parts = fi[:-4].split('_')
+                ms = parts[-1].split('-')
+                ymean = float(ms[0])
+                ystd = float(ms[1])
+                timestamps = [int(df.loc[0, 'timestamp']), int(df.loc[29, 'timestamp'])]
+                kpi = '_'.join(parts[:-1])
+
+                tem = df['value'].tolist()
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    if len(tem) != 30:
+                        continue
+
+                    # CNN pattern prediction
+                    p = clf.predict(np.array(tem))
+                    pattern_type = ANOMALY_TYPES[p[0]] if p[0] < len(ANOMALY_TYPES) else 'Fluctuations'
+
+                    if p[0] % 2 == 0:
+                        trend = 'increase'
+                        value = max(tem)
+                    else:
+                        trend = 'decrease'
+                        value = min(tem)
+
+                    if ystd == 0:
+                        ystd = 0.000001
+                    score = round(abs((value - ymean) / ystd) / 2, 2)
+
+                    if math.isnan(score):
+                        continue
+                    if score <= 1:
+                        continue
+
+                    if not w:
+                        # Format timestamps
+                        start_utc = datetime.fromtimestamp(int(timestamps[0] / 1000), tz=pytz.UTC)
+                        start_local = start_utc.astimezone(pytz.timezone('Asia/Shanghai'))
+                        start = start_local.strftime('%Y-%m-%d %H:%M:%S')
+
+                        end_utc = datetime.fromtimestamp(int(timestamps[1] / 1000), tz=pytz.UTC)
+                        end_local = end_utc.astimezone(pytz.timezone('Asia/Shanghai'))
+                        end = end_local.strftime('%Y-%m-%d %H:%M:%S')
+
+                        # Generate pattern-specific description
+                        desc = _generate_pattern_description(
+                            pattern_type=pattern_type,
+                            kpi=kpi,
+                            service=name,
+                            values=tem,
+                            ymean=ymean,
+                            ystd=ystd,
+                            start=start,
+                            end=end,
+                            score=score,
+                        )
+                        anomaly_descriptions.append(desc)
+
+                        # Track per-service count
+                        service_anomaly_count[name] = service_anomaly_count.get(name, 0) + 1
+            except Exception as e:
+                continue
+
+    # Append cross-metric correlation hints
+    for svc, count in service_anomaly_count.items():
+        if count >= 2:
+            anomaly_descriptions.append(
+                f"[Cross-Metric Alert] Service {svc} has {count} anomalous metrics "
+                f"simultaneously, suggesting a systemic issue affecting multiple "
+                f"resource dimensions of this service."
+            )
+
+    return anomaly_descriptions
         

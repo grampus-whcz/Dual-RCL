@@ -28,10 +28,12 @@ PYTHON=/root/shared-nvme/.conda/envs/LocaleXpert_env/bin/python
 
 # === 配置 ===
 # LLM 模型选择:
-#   API 模型:  deepseek-r1-0528, GPT_4
+#   API 模型:  glm-4.5 (默认), glm-4.7, deepseek-r1-0528, GPT_4
 #   本地模型:  ollama-qwen3-14b, ollama-qwen3-8b (需要 Ollama 服务运行)
-MODEL="ollama-qwen3-14b"
+MODEL="glm-4.5"
+# MODEL="glm-4.7"
 # MODEL="deepseek-r1-0528"
+# MODEL="ollama-qwen3-14b"
 
 # Ollama 地址 (仅本地模型需要)
 OLLAMA_URL="http://localhost:11434/v1"
@@ -81,10 +83,6 @@ print(' '.join(pick))
     fi
 
     for TIME in $TIMES; do
-        # 将 HH:MM 转为论文格式的 task 描述
-        HH=$(echo "$TIME" | cut -d: -f1)
-        MM=$(echo "$TIME" | cut -d: -f2)
-
         CASE_NAME="localexpert_${MMDD}"
 
         echo ""
@@ -97,14 +95,16 @@ print(' '.join(pick))
                 --name "${CASE_NAME}" \
                 --model "$MODEL" \
                 --ollama-url "$OLLAMA_URL" \
-                --skip-multivariate
+                --skip-multivariate \
+                --report-dir Report_localexpert
         else
-            # API 模型
+            # API 模型 (glm-4.5, glm-4.7, deepseek-r1-0528, GPT_4 等)
             $PYTHON run.py \
                 --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
                 --name "${CASE_NAME}" \
                 --model "$MODEL" \
-                --skip-multivariate
+                --skip-multivariate \
+                --report-dir Report_localexpert
         fi
     done
 done
@@ -120,15 +120,24 @@ done
 # for t in times:
 #     print(t)
 # " | while read TIME; do
-#         HH=$(echo "$TIME" | cut -d: -f1)
-#         MM=$(echo "$TIME" | cut -d: -f2)
 #         CASE_NAME="localexpert_${MMDD}"
 #         echo ">>> ${DATE} ${TIME} <<<"
-#         $PYTHON run.py \
-#             --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
-#             --name "${CASE_NAME}" \
-#             --model "$MODEL" \
-#             --skip-multivariate
+#         if [[ "$MODEL" == ollama-* ]]; then
+#             $PYTHON run.py \
+#                 --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
+#                 --name "${CASE_NAME}" \
+#                 --model "$MODEL" \
+#                 --ollama-url "$OLLAMA_URL" \
+#                 --skip-multivariate \
+#                 --report-dir Report_localexpert
+#         else
+#             $PYTHON run.py \
+#                 --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
+#                 --name "${CASE_NAME}" \
+#                 --model "$MODEL" \
+#                 --skip-multivariate \
+#                 --report-dir Report_localexpert
+#         fi
 #     done
 # done
 
@@ -136,5 +145,5 @@ echo ""
 echo "============================================================"
 echo " All runs complete."
 echo " Evaluate with:"
-echo "   python -m evaluation.run_evaluation --log-dir Report/"
+echo "   python -m evaluation.run_evaluation --log-dir Report_localexpert/"
 echo "============================================================"

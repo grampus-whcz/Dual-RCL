@@ -27,19 +27,21 @@ PYTHON=/root/shared-nvme/.conda/envs/LocaleXpert_env/bin/python
 # === 配置 ===
 
 # LLM 模型选择:
-#   API 模型:  deepseek-r1-0528, GPT_4
+#   API 模型:  glm-4.5 (默认), glm-4.7, deepseek-r1-0528, GPT_4
 #   本地模型:  ollama-qwen3-14b, ollama-qwen3-8b (需要 Ollama 服务运行)
-MODEL="ollama-qwen3-14b"
+MODEL="glm-4.5"
+# MODEL="glm-4.7"
 # MODEL="deepseek-r1-0528"
+# MODEL="ollama-qwen3-14b"
 
 # Ollama 地址 (仅本地模型需要)
 OLLAMA_URL="http://localhost:11434/v1"
 
 # 多变量异常检测方法 (可选: tranad, usad, omnianomaly, mad_gan, mscred, gdn, mtad_gat)
-ANOMALY_METHOD="usad"
+ANOMALY_METHOD="tranad"
 
 # 多变量检测训练轮数
-ANOMALY_EPOCHS=5
+ANOMALY_EPOCHS=3
 
 # === 可用日期 (只有 0701-0703 有预处理数据) ===
 DATES=(
@@ -100,15 +102,17 @@ print(' '.join(pick))
                 --model "$MODEL" \
                 --ollama-url "$OLLAMA_URL" \
                 --anomaly-method "$ANOMALY_METHOD" \
-                --anomaly-epochs "$ANOMALY_EPOCHS"
+                --anomaly-epochs "$ANOMALY_EPOCHS" \
+                --report-dir Report_dualchannel
         else
-            # API 模型
+            # API 模型 (glm-4.5, glm-4.7, deepseek-r1-0528, GPT_4 等)
             $PYTHON run.py \
                 --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
                 --name "${CASE_NAME}" \
                 --model "$MODEL" \
                 --anomaly-method "$ANOMALY_METHOD" \
-                --anomaly-epochs "$ANOMALY_EPOCHS"
+                --anomaly-epochs "$ANOMALY_EPOCHS" \
+                --report-dir Report_dualchannel
         fi
     done
 done
@@ -133,14 +137,16 @@ done
 #                 --model "$MODEL" \
 #                 --ollama-url "$OLLAMA_URL" \
 #                 --anomaly-method "$ANOMALY_METHOD" \
-#                 --anomaly-epochs "$ANOMALY_EPOCHS"
+#                 --anomaly-epochs "$ANOMALY_EPOCHS" \
+#                 --report-dir Report_dualchannel
 #         else
 #             $PYTHON run.py \
 #                 --task "At 2021/${MMDD:0:2}/${MMDD:2:2} ${TIME} have exceptions in the microservices system. What are these exceptions? Please output an exception analysis." \
 #                 --name "${CASE_NAME}" \
 #                 --model "$MODEL" \
 #                 --anomaly-method "$ANOMALY_METHOD" \
-#                 --anomaly-epochs "$ANOMALY_EPOCHS"
+#                 --anomaly-epochs "$ANOMALY_EPOCHS" \
+#                 --report-dir Report_dualchannel
 #         fi
 #     done
 # done
@@ -149,5 +155,5 @@ echo ""
 echo "============================================================"
 echo " All runs complete."
 echo " Evaluate with:"
-echo "   python -m evaluation.run_evaluation --log-dir Report/"
+echo "   python -m evaluation.run_evaluation --log-dir Report_dualchannel/"
 echo "============================================================"

@@ -61,11 +61,15 @@ class ModelType(Enum):
     # Ollama local models
     OLLAMA_QWEN3_14B = 'qwen3:14b'
     OLLAMA_QWEN3_8B = 'qwen3:8b'
+    # ZhipuAI GLM models (Coding endpoint)
+    GLM_4_5 = 'glm-4.5'
+    GLM_4_7 = 'glm-4.7'
 
     @property
     def value_for_tiktoken(self):
         return self.value if self.name not in ('MISTRAL_7B', 'LLAMA_3_8B', 'DEEPSEEK_R1_0528',
-                                                'OLLAMA_QWEN3_14B', 'OLLAMA_QWEN3_8B') else 'gpt-3.5-turbo-1106'
+                                                'OLLAMA_QWEN3_14B', 'OLLAMA_QWEN3_8B',
+                                                'GLM_4_5', 'GLM_4_7') else 'gpt-3.5-turbo-1106'
 
 
 class ModelProviderType(Enum):

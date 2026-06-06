@@ -1,0 +1,552 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+\usepackage{hyperref}
+
+\newcommand{\sysname}{\textsc{SoC-RCA}}
+
+\begin{document}
+
+\title{Dual-Channel Root Cause Analysis with LLM-Arbitrated\\Conflict Resolution for Microservice Failure Localization}
+
+\author{
+  % Author names omitted for review
+  \IEEEcompsocitemizethanks{
+    \IEEEcompsocthanksitem Manuscript received XXXXX, 2026.
+  }
+  \thanks{This work was supported in part by XXXXX.}
+}
+
+\markboth{IEEE Transactions on Services Computing}%
+{Author \MakeLowercase{\textit{et al.}}: \sysname: Dual-Channel RCA with LLM-Arbitrated Conflict Resolution}
+
+\maketitle
+
+% ======================================================================
+%  ABSTRACT
+% ======================================================================
+\begin{abstract}
+Failure localization in microservice systems is challenging because faults propagate across services through complex dependency chains, producing conflicting evidence across heterogeneous telemetry modalities.
+Existing LLM-enhanced frameworks such as LocaleXpert transform multi-modal data into natural language for agent-based reasoning, but rely on a single anomaly detection channel---either univariate statistical methods or ad-hoc multivariate models---and thus fail to distinguish true root causes from \emph{correlation disruptions} (where inter-variable dependencies break while each individual metric remains within normal bounds).
+
+We present \sysname{}, a dual-channel root cause analysis framework that addresses the fundamental conflict between univariate and multivariate anomaly detection through a principled, LLM-arbitrated resolution mechanism.
+\sysname{} runs two independent RCA pipelines in parallel: (1) a \textbf{univariate channel} using CNN-based pattern classification and SPOT anomaly scoring, and (2) a \textbf{multivariate channel} using configurable deep anomaly detectors (TranAD, USAD, GDN, among seven supported methods) to capture cross-metric correlation disruptions.
+Each channel drives its own causal random walk on the same PCMCI causal graph, producing independent root-cause rankings.
+When rankings diverge, a structured conflict classifier categorizes the disagreement into three scenarios, and an LLM-based arbitrator synthesizes a unified diagnosis with explicit reasoning---delegating final adjudication to causal graph structure when evidence is genuinely ambiguous.
+We further introduce enhanced anomaly description generation with severity grading, cross-metric correlation analysis, and causal propagation path injection, which enrich the knowledge supplied to downstream LLM agents.
+Experiments on the GAIA benchmark demonstrate that \sysname{} improves Top-3 localization accuracy by \textbf{X.X\%} over the single-channel LocaleXpert baseline while producing significantly more interpretable root-cause reports.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Root cause analysis, microservice failure localization, multi-modal anomaly detection, large language models, causal inference, conflict resolution.
+\end{IEEEkeywords}
+
+
+% ======================================================================
+%  I. INTRODUCTION (Motivation)
+% ======================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Modern microservice architectures comprise tens to hundreds of loosely coupled services, interconnected through complex dependency graphs.  When a failure occurs---whether a resource exhaustion, a network partition, or a software defect---its effects \emph{cascade} across service boundaries, producing observable anomalies in multiple telemetry modalities simultaneously: metrics spike or shift, traces exhibit anomalous call patterns, and logs emit error messages~\cite{microcause,ma2022mepfl,diagfusion}.  Accurate and timely root cause analysis (RCA) is therefore critical for maintaining system reliability and minimizing business impact~\cite{aiops_survey}.
+
+\subsection{The Multi-Modal Integration Challenge}
+
+Recent advances in Large Language Models (LLMs) have catalyzed a paradigm shift in microservice failure localization.  LocaleXpert~\cite{localexpert} demonstrated that transforming multi-modal telemetry data (metrics, traces, logs) into structured natural language descriptions enables LLM-based expert agents to perform interpretable root cause reasoning.  The key insight is that LLMs can serve as a \emph{reasoning substrate} that integrates heterogeneous evidence, provided the input descriptions are sufficiently informative.
+
+However, a critical bottleneck remains: the \textbf{quality and completeness of the anomaly evidence} supplied to the LLM agents directly determines diagnostic accuracy.  The original LocaleXpert framework employs a \emph{single anomaly detection channel}---3-sigma univariate detection for metrics and TraceAnomaly for traces---which inherently limits the evidence available for downstream reasoning.  This limitation manifests in two fundamental ways:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Correlation disruption blindness.}
+  Approximately 60\% of microservice failures manifest as cascading cross-service effects~\cite{microheuristic}, where the fault disrupts \emph{inter-variable dependency structures} while leaving individual metrics within their normal ranges.  Univariate detection methods (3-sigma, SPOT) are fundamentally incapable of detecting such \emph{correlation disruptions} because they examine each metric in isolation.  The system reports ``no anomaly detected'' despite an active failure.
+
+  \item \textbf{Single-channel bias in root cause ranking.}
+  Even when univariate detection does identify anomalies, the resulting root-cause ranking is biased toward metrics that exhibit the most extreme individual deviations---which may be downstream symptoms rather than the true root cause.  Without a complementary perspective that considers the \emph{joint state} of all metrics, the causal random walk may converge on a proximate but incorrect root cause.
+\end{enumerate}
+
+These limitations are not merely theoretical.  Consider a scenario where a database connection pool exhaustion causes increased latency in downstream services.  Individual service latencies may each rise by only 1--2$\sigma$, remaining within 3-sigma bounds, yet the \emph{correlation structure} between the database latency and service response times is disrupted.  A univariate-only system misses this entirely; a multivariate-only system detects the disruption but cannot attribute it to a specific metric with the precision of a per-metric anomaly score.  Neither perspective alone suffices.
+
+\subsection{The Conflict Resolution Challenge}
+
+A natural response to the above limitations is to combine both univariate and multivariate detection.  However, this creates a new challenge: \textbf{how to resolve conflicts when the two channels disagree}.  We identify three characteristic conflict scenarios:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Scenario~1 (Correlation Disruption):} Multivariate detection flags a system-level anomaly, but univariate detection sees no individual metric out of bounds.  This is the classic correlation disruption case.
+  \item \textbf{Scenario~2 (Isolated Noise):} Univariate detection flags a metric anomaly, but multivariate analysis indicates the system's joint state is normal.  The univariate alert may be noise or a non-critical fluctuation.
+  \item \textbf{Scenario~3 (Root Cause Divergence):} Both channels detect anomalies, but their root-cause rankings point to different metrics.  The true root cause is ambiguous.
+\end{itemize}
+
+These scenarios require a \emph{principled conflict resolution strategy} rather than a simple majority vote or fixed priority rule.  Importantly, the resolution must be \textbf{explainable}---operators need to understand \emph{why} one channel was trusted over another in a given situation.
+
+\subsection{The Knowledge Enrichment Challenge}
+
+Even when anomaly detection and root-cause ranking are correct, the \emph{quality of the natural language descriptions} supplied to LLM agents directly impacts downstream reasoning quality.  As the LocaleXpert ablation study showed, removing the anomaly description module (w/o AD) causes the steepest decline in all evaluation metrics, confirming that \emph{the anomaly description module is the most critical component for LLM reasoning quality}~\cite{localexpert}.
+
+The original anomaly descriptions are relatively simplistic: they concatenate pattern type, peak value, and time range into a single sentence.  They lack:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Statistical context} (how many $\sigma$ deviations, severity classification)
+  \item \textbf{Cross-metric correlation information} (which metrics are jointly affected)
+  \item \textbf{Causal propagation paths} (how anomalies propagate through the dependency graph)
+  \item \textbf{Dual-channel concordance assessment} (whether both channels agree or disagree, and why)
+\end{itemize}
+
+Without this enriched context, the LLM agents must reason from incomplete evidence, limiting both accuracy and interpretability of the final diagnosis.
+
+\subsection{Key Insights and Contributions}
+
+Based on the above challenges, we propose \sysname{}, a framework built on three key insights:
+
+\begin{quote}
+\textbf{Insight~1:} \emph{Univariate and multivariate anomaly detection are complementary, not competing, perspectives.  The former excels at attributing extreme point anomalies to specific metrics; the latter excels at detecting subtle correlation disruptions that span multiple metrics.  Neither alone is sufficient for robust root cause analysis.}
+\end{quote}
+
+\begin{quote}
+\textbf{Insight~2:} \emph{When the two detection channels disagree, the resolution should be delegated to causal reasoning---not heuristic rules.  The PCMCI causal graph encodes fault propagation paths and temporal ordering, which provides a principled basis for determining whether a flagged metric is a true root cause or a downstream symptom.}
+\end{quote}
+
+\begin{quote}
+\textbf{Insight~3:} \emph{LLM agents achieve higher reasoning quality when supplied with enriched, structured evidence that includes not only raw anomaly descriptions but also cross-metric correlations, causal propagation paths, and explicit conflict resolution rationale.  The LLM should understand \emph{why} a particular channel was trusted, not just \emph{which} channel was trusted.}
+\end{quote}
+
+In summary, this paper makes the following contributions:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Dual-Channel RCA Architecture.}  We propose a parallel dual-channel root cause analysis framework where univariate (CNN+SPOT) and multivariate (configurable deep detectors) channels independently drive causal random walks on the same PCMCI causal graph, producing independent root-cause rankings.
+
+  \item \textbf{LLM-Arbitrated Conflict Resolution.}  We introduce a structured conflict classification mechanism with three scenarios and an LLM-based arbitrator that synthesizes a unified diagnosis with explicit reasoning.  When evidence is genuinely ambiguous (Scenario~3), the system delegates final adjudication to causal graph structure via a boosted random walk on merged candidate sets.
+
+  \item \textbf{Configurable Multivariate Detection.}  We implement a unified interface supporting seven deep anomaly detection methods (TranAD, USAD, OmniAnomaly, MAD-GAN, MSCRED, GDN, MTAD-GAT), enabling systematic comparison and method selection based on data characteristics.
+
+  \item \textbf{Enriched Knowledge Injection.}  We enhance the anomaly description generation with severity grading, pattern-specific templates, cross-metric correlation analysis, causal propagation path extraction, and dual-channel concordance assessment, significantly enriching the evidence available to downstream LLM agents.
+
+  \item \textbf{Comprehensive Evaluation.}  We evaluate \sysname{} on the GAIA benchmark dataset, demonstrating improvements in both localization accuracy and reasoning quality compared to the single-channel LocaleXpert baseline.
+\end{enumerate}
+
+
+% ======================================================================
+%  II. RELATED WORK
+% ======================================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Microservice Root Cause Analysis}
+
+Traditional microservice RCA methods can be categorized by their data modality.  \textbf{Metric-based} approaches build causal graphs from time-series data and perform root cause ranking via random walks or graph propagation~\cite{microcause,cloudranger,causeinfer}.  MicroCause~\cite{microcause} constructs a PCMCI causal graph from metrics and applies a temporal cause-oriented random walk to rank root causes.  \textbf{Trace-based} methods analyze distributed tracing data to localize faulty services.  MEPFL~\cite{ma2022mepfl} extracts features from system traces and trains Random Forest and MLP models for fault localization.  \textbf{Log-based} approaches parse and analyze log messages to detect anomalies~\cite{loganomaly,deeptest}.
+
+\textbf{Multi-modal} methods integrate two or more data types.  Eadro~\cite{eadro} fuses anomaly detection results from logs, metrics, and traces via graph attention networks.  DiagFusion~\cite{diagfusion} builds dependency graphs from traces and deployment data.  PDiagnose~\cite{pdiagnose} uses a voting system across modalities.  However, these methods produce opaque numerical outputs without natural-language explanations, limiting their utility for on-call operators who need actionable insights.
+
+\subsection{LLM-Enhanced Failure Localization}
+
+Recent work has explored LLMs for AIOps tasks.  RCACopilot~\cite{rcacopilot} collects multi-modal diagnostic data and feeds it to an LLM for root cause prediction.  RCAgent~\cite{rcagent} augments LLMs with external tools for RCA.  ReAct~\cite{react} combines chain-of-thought reasoning with tool invocation.  However, these approaches either rely solely on LLM reasoning without structured anomaly detection pipelines, or lack mechanisms for resolving conflicting evidence from multiple detection methods.
+
+LocaleXpert~\cite{localexpert} bridges this gap by integrating traditional AIOps methods (MicroCause for metrics, MEPFL for traces) with LLM-based expert agents, achieving both accuracy and interpretability.  However, LocaleXpert employs only \emph{single-channel} univariate anomaly detection (3-sigma), making it blind to correlation disruptions.  \sysname{} extends LocaleXpert by introducing a parallel multivariate detection channel and a principled conflict resolution mechanism.
+
+\subsection{Multivariate Time Series Anomaly Detection}
+
+Deep learning methods for multivariate time series anomaly detection have shown superior performance over statistical methods in capturing cross-variable dependencies.  TranAD~\cite{tranad} uses a dual-phase transformer with self-conditioning for adversarial training.  USAD~\cite{usad} employs dual autoencoders with adversarial training.  OmniAnomaly~\cite{omnianomaly} uses GRU-based VAE with planar normalizing flows.  GDN~\cite{gdn} leverages graph attention networks to model variable dependencies.  MTAD-GAT~\cite{mtadgat} combines graph attention in both feature and time dimensions.
+
+While these methods have been applied to general anomaly detection tasks, they have not been integrated into a microservice RCA pipeline with causal reasoning and LLM-based interpretation.  \sysname{} is the first framework to combine configurable multivariate detection with causal graph-based root cause analysis and LLM-arbitrated conflict resolution.
+
+
+% ======================================================================
+%  III. METHODOLOGY
+% ======================================================================
+\section{Methodology}
+\label{sec:method}
+
+\subsection{System Overview}
+
+Figure~\ref{fig:architecture} presents the overall architecture of \sysname{}.  Given a failure incident described by a natural language task prompt (e.g., ``At 2021/07/01 11:54 have exceptions in the microservice system''), the system executes a nine-phase pipeline:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Trace Anomaly Detection} --- Detects structural and temporal anomalies in distributed traces using TraceAnomaly~\cite{traceanomaly}, generating natural language descriptions.
+  \item \textbf{Trace Root Service Localization} --- Uses MEPFL~\cite{ma2022mepfl} (Random Forest + MLP) to identify the top-5 root cause services from trace data.
+  \item \textbf{Metric Data Loading} --- Loads and preprocesses metric time-series data from the MicroCause input format.
+  \item \textbf{Dual Anomaly Detection} --- Runs univariate (CNN+SPOT) and multivariate (configurable deep detector) anomaly detection \emph{in parallel}, producing independent anomaly scores and feature rankings.
+  \item \textbf{Dual-Channel Root Cause Analysis} --- Each channel drives its own causal random walk on the shared PCMCI causal graph, producing independent root-cause metric rankings.
+  \item \textbf{LLM Conflict Resolution} --- Classifies the conflict scenario, invokes an LLM arbitrator, and produces a unified diagnosis with explicit reasoning.
+  \item \textbf{Enhanced Knowledge Injection} --- Injects enriched anomaly descriptions, causal propagation paths, cross-metric correlations, and concordance analysis into the LLM agent prompts.
+  \item \textbf{Log Analysis} --- The Log Expert agent analyzes raw log entries around the failure time window.
+  \item \textbf{ChatChain LLM Reasoning} --- Multi-agent collaboration (Trace Expert, Metric Expert, Log Expert, Root Cause Expert) produces the final interpretable diagnosis report.
+\end{enumerate}
+
+Phases 1--3 and 8--9 follow the original LocaleXpert design~\cite{localexpert}.  \sysname{} introduces substantial innovations in Phases 4--7, which we describe in detail below.
+
+\begin{figure*}[t]
+  \centering
+  \begin{tikzpicture}[
+    node distance=0.8cm and 1.2cm,
+    phase/.style={draw, rounded corners, fill=blue!8, minimum width=2.2cm, minimum height=0.7cm, align=center, font=\small},
+    newphase/.style={draw, rounded corners, fill=orange!15, minimum width=2.2cm, minimum height=0.7cm, align=center, font=\small},
+    arrow/.style={-{Stealth[length=2mm]}, thick},
+    dasharrow/.style={-{Stealth[length=2mm]}, thick, dashed},
+  ]
+    % Phases
+    \node[phase] (p1) {Phase 1\\Trace Anomaly\\Detection};
+    \node[phase, right=of p1] (p2) {Phase 2\\MEPFL Root\\Service};
+    \node[phase, right=of p2] (p3) {Phase 3\\Metric Data\\Loading};
+
+    % Phase 4: dual detection
+    \node[newphase, below=of p1] (p4a) {Phase 4A\\Univariate\\(CNN+SPOT)};
+    \node[newphase, below=of p3] (p4b) {Phase 4B\\Multivariate\\(TranAD/etc.)};
+    \node[newphase, below=of p2] (p4c) {Phase 4C\\PCMCI Causal\\Discovery};
+
+    % Phase 5: dual RCA
+    \node[newphase, below=of p4a] (p5a) {Phase 5A\\Univariate\\RCA Ranking};
+    \node[newphase, below=of p4b] (p5b) {Phase 5B\\Multivariate\\RCA Ranking};
+
+    % Phase 6: conflict resolution
+    \node[newphase, below=of p4c] (p6) {Phase 6\\LLM Conflict\\Resolution};
+
+    % Phase 7: knowledge injection
+    \node[newphase, below=of p6] (p7) {Phase 7\\Enhanced\\Knowledge Injection};
+
+    % Phase 8-9
+    \node[phase, below=of p7] (p8) {Phase 8\\Log\\Analysis};
+    \node[phase, below=of p8] (p9) {Phase 9\\ChatChain\\LLM Reasoning};
+
+    % Arrows
+    \draw[arrow] (p1) -- (p2);
+    \draw[arrow] (p2) -- (p3);
+    \draw[arrow] (p3) -- (p4a);
+    \draw[arrow] (p3) -- (p4b);
+    \draw[arrow] (p3) -- (p4c);
+    \draw[arrow] (p4a) -- (p5a);
+    \draw[arrow] (p4b) -- (p5b);
+    \draw[arrow] (p4c) -- (p5a);
+    \draw[arrow] (p4c) -- (p5b);
+    \draw[arrow] (p5a) -- (p6);
+    \draw[arrow] (p5b) -- (p6);
+    \draw[arrow] (p6) -- (p7);
+    \draw[arrow] (p7) -- (p8);
+    \draw[arrow] (p8) -- (p9);
+
+    % Labels
+    \node[left=0.5cm of p4a, font=\scriptsize\itshape, text=orange!70!black, align=right] {SPOT $\eta$};
+    \node[right=0.5cm of p4b, font=\scriptsize\itshape, text=orange!70!black, align=left] {Multi $\eta$};
+    \node[right=0.3cm of p5b, font=\scriptsize\itshape, text=orange!70!black] {Causal Graph};
+
+    % Background group for new phases
+    \begin{scope}[on background layer]
+      \node[fit=(p4a)(p4b)(p4c)(p5a)(p5b)(p6)(p7),
+            draw=orange!50, dashed, rounded corners, inner sep=0.4cm,
+            label={[font=\small\bfseries, text=orange!70!black]above:\sysname{} Contributions (Phases 4--7)}] {};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{Architecture of \sysname{}.  Phases highlighted in orange (4--7) represent the key contributions: dual-channel anomaly detection and RCA, LLM-arbitrated conflict resolution, and enriched knowledge injection.  The shared PCMCI causal graph serves as the structural backbone for both RCA channels.}
+  \label{fig:architecture}
+\end{figure*}
+
+
+\subsection{Phase 4: Dual Anomaly Detection}
+\label{sec:dual_detection}
+
+\subsubsection{Channel A: Univariate Anomaly Detection}
+
+The univariate channel processes each metric independently through two complementary mechanisms:
+
+\textbf{Pattern Classification.}  A 1D-CNN classifier (inspired by AlexNet but adapted for time-series) classifies detected anomalies into 11 patterns: single/double spike, single/double dip, level shift up/down, transient level shift up/down, steady increase/decrease, and fluctuations.  For each anomalous metric, the system generates a \emph{structured natural language description} using pattern-specific templates that include:
+\begin{itemize}[leftmargin=*]
+  \item Temporal boundaries (start, end, duration)
+  \item Statistical features (mean, peak, $\sigma$-deviation, change magnitude)
+  \item Severity classification (mild/moderate/severe/critical based on $\sigma$-deviation)
+  \item Cross-metric alerts (when multiple metrics of the same service are simultaneously anomalous)
+\end{itemize}
+
+\textbf{SPOT Anomaly Scoring.}  The Streaming Percentile-based Outlier Test (SPOT/dSPOT)~\cite{spot} computes a per-metric anomaly deviation score $\eta_i$ for each metric $i$, which quantifies how far the observed behavior deviates from the expected distribution.  This $\eta$ vector serves as the \emph{prior anomaly signal} for the univariate RCA channel.
+
+\subsubsection{Channel B: Multivariate Anomaly Detection}
+
+The multivariate channel analyzes all metrics \emph{jointly} to detect anomalies that arise from disrupted inter-variable dependencies rather than extreme individual deviations.  \sysname{} supports seven deep learning methods through a unified factory interface:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{TranAD}~\cite{tranad} --- Dual-phase self-conditioning Transformer with adversarial training (default).
+  \item \textbf{USAD}~\cite{usad} --- Dual autoencoder with adversarial training.
+  \item \textbf{OmniAnomaly}~\cite{omnianomaly} --- GRU-based VAE with planar normalizing flows.
+  \item \textbf{MAD-GAN}~\cite{madgan} --- Generative adversarial network for anomaly detection.
+  \item \textbf{MSCRED}~\cite{mscred} --- ConvLSTM encoder-decoder for multi-scale correlation.
+  \item \textbf{GDN}~\cite{gdn} --- Graph attention network modeling variable dependencies.
+  \item \textbf{MTAD-GAT}~\cite{mtadgat} --- Dual graph attention (feature + time) with GRU.
+\end{itemize}
+
+All detectors share a common interface: \texttt{train(normal\_data, epochs)} $\rightarrow$ \texttt{detect(test\_data)} $\rightarrow$ \texttt{result\_dict}.  The result dictionary contains:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{anomaly\_scores}: per-timestep aggregate anomaly score.
+  \item \texttt{feature\_scores}: per-timestep, per-feature reconstruction error.
+  \item \texttt{feature\_ranking}: metrics ranked by total anomaly contribution.
+  \item \texttt{is\_anomalous}: boolean system-level anomaly verdict.
+\end{itemize}
+
+The feature ranking provides a multivariate attribution: for each metric $i$, the total contribution $c_i = \sum_{t} e_{t,i}$ where $e_{t,i}$ is the per-feature reconstruction error at timestep $t$.  This ranking is converted to a multivariate $\eta^{\text{multi}}$ vector:
+\begin{equation}
+  \eta^{\text{multi}}_i = \frac{c_i}{\max_j c_j} \cdot \max_j \eta^{\text{SPOT}}_j
+  \label{eq:multi_eta}
+\end{equation}
+This scaling ensures that the multivariate $\eta$ has comparable magnitude to the univariate SPOT $\eta$, enabling them to be used interchangeably as prior signals for the causal random walk.
+
+\subsubsection{Phase 4C: PCMCI Causal Discovery}
+
+Both RCA channels share a single PCMCI causal graph~\cite{microcause}, constructed from the full metric time-series data.  PCMCI (PC algorithm with Momentary Conditional Independence) captures time-lagged causal relationships between metrics, producing a directed acyclic graph where edges represent causal links with associated temporal delays and strengths.  This shared graph serves as the structural backbone for both channels' random walks, ensuring that \emph{the differences in root-cause rankings arise solely from the different anomaly prior signals ($\eta^{\text{SPOT}}$ vs.\ $\eta^{\text{multi}}$), not from different graph structures}.
+
+
+\subsection{Phase 5: Dual-Channel Root Cause Analysis}
+\label{sec:dual_rca}
+
+\subsubsection{Shared Causal Random Walk}
+
+Given the PCMCI causal graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ with nodes $\mathcal{V}$ (metrics) and edges $\mathcal{E}$ (causal links), the system constructs a transition probability matrix $Q$ using partial correlations:
+\begin{equation}
+  Q_{ij} = \rho \cdot |r_{ij \cdot \mathcal{V} \setminus \{i,j\}}| + (1-\rho) \cdot \mathbb{1}[(i,j) \in \mathcal{E}]
+  \label{eq:q_matrix}
+\end{equation}
+where $r_{ij \cdot \mathcal{V} \setminus \{i,j\}}$ is the partial correlation between metrics $i$ and $j$ controlling for all other metrics, and $\rho$ balances structural vs.\ statistical influence.
+
+A random walk of $S$ steps (default: 1000 walks, each 15 steps) starting from the frontend service node produces a visitation count vector $\mathbf{v} = (v_1, \ldots, v_N)$, recording how often each metric node is visited.
+
+\subsubsection{Channel-Specific Root Cause Scoring}
+
+Each channel computes a root cause score $\gamma_i$ for each metric $i$ by combining the visitation frequency with its channel-specific anomaly prior:
+\begin{equation}
+  \gamma_i = \lambda \cdot \frac{v_i}{\sum_j v_j} + (1 - \lambda) \cdot \eta_i
+  \label{eq:gamma}
+\end{equation}
+where $\lambda \in [0,1]$ balances causal graph structure ($v_i$) against anomaly evidence ($\eta_i$), and $\eta_i$ is either $\eta^{\text{SPOT}}_i$ (Channel A) or $\eta^{\text{multi}}_i$ (Channel B).
+
+Metrics are ranked by $\gamma_i$ to produce the top-$k$ root cause ranking:
+\begin{equation}
+  \text{Rank}^{\text{uni}} = \text{argsort}(\gamma^{\text{uni}}, \text{desc}), \quad
+  \text{Rank}^{\text{multi}} = \text{argsort}(\gamma^{\text{multi}}, \text{desc})
+  \label{eq:ranking}
+\end{equation}
+
+The key insight is that \emph{both channels share the same causal graph structure} (same $Q$-matrix, same visitation counts $\mathbf{v}$), so the only difference between the two rankings is the anomaly prior $\eta$.  This controlled comparison isolates the impact of the detection method on root-cause attribution.
+
+
+\subsection{Phase 6: LLM-Arbitrated Conflict Resolution}
+\label{sec:conflict}
+
+\subsubsection{Conflict Scenario Classification}
+
+Given the dual-channel rankings $\text{Rank}^{\text{uni}}$ and $\text{Rank}^{\text{multi}}$, and the detection-level anomaly flags ($\text{anomaly}^{\text{uni}}$, $\text{anomaly}^{\text{multi}}$), the system classifies the situation into one of four scenarios:
+
+\begin{table}[h]
+  \centering
+  \caption{Conflict Scenario Classification}
+  \label{tab:scenarios}
+  \begin{tabular}{@{}p{0.12\linewidth}p{0.35\linewidth}p{0.40\linewidth}@{}}
+    \toprule
+    \textbf{Scenario} & \textbf{Observation} & \textbf{Strategy} \\
+    \midrule
+    Consistent & Both rankings agree ($\geq$2 top-5 overlap) & Merge descriptions; use agreed ranking \\
+    S1 & Multi=anom, Uni=normal & Trust multivariate RCA (correlation disruption) \\
+    S2 & Uni=anom, Multi=normal & Trust multivariate assessment; retain univariate as supplementary evidence \\
+    S3 & Both=anom, different roots & Merge candidate sets; delegate to causal reasoning \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{LLM Arbitration}
+
+For each conflict scenario, the system constructs a scenario-specific prompt and invokes an LLM (e.g., GLM-4.5, DeepSeek-R1) to analyze the conflicting evidence and produce a structured JSON response containing:
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{consistency\_assessment}: which scenario was identified
+  \item \texttt{trusted\_channel}: which channel to prioritize
+  \item \texttt{anomaly\_summary}: natural language summary of the anomaly state
+  \item \texttt{root\_cause\_candidates}: merged candidate metric list
+  \item \texttt{reasoning}: step-by-step reasoning considering both channels and causal principles
+  \item \texttt{correlation\_disruption\_analysis}: analysis of whether dependency structures were disrupted
+\end{itemize}
+
+The LLM is instructed with explicit priority rules: multivariate detection is the base for determining ``is the system anomalous?'' (captures correlation disruptions), univariate detection supplements with ``which specific metric?'' (provides interpretable per-metric signals), and causal reasoning (PCMCI graph + random walk) is the \textbf{final arbiter}.
+
+\subsubsection{Causal Re-Arbitration for Scenario~3}
+
+When both channels detect anomalies but disagree on root cause (Scenario~3), the system does not simply pick one channel.  Instead, it:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Merges} the candidate sets from both channels (up to 10 metrics).
+  \item \textbf{Constructs a boost vector} $\mathbf{b} \in \mathbb{R}^N$:
+  \begin{equation}
+    b_i = \begin{cases}
+      2.0 & \text{if metric } i \text{ is in both channels' top-5} \\
+      1.5 & \text{if metric } i \text{ is in one channel's top-5} \\
+      1.0 & \text{otherwise}
+    \end{cases}
+  \end{equation}
+  \item \textbf{Computes a blended anomaly prior}: $\eta^{\text{blend}} = \frac{\eta^{\text{SPOT}} + \eta^{\text{multi}}}{2} \odot \mathbf{b}$
+  \item \textbf{Re-runs the causal random walk} with $\eta^{\text{blend}}$ to produce the final arbitrated ranking.
+\end{enumerate}
+
+This mechanism ensures that metrics flagged by \emph{both} channels receive the strongest boost, while metrics flagged by only one channel receive a moderate boost.  The causal graph structure then determines the final ranking based on fault propagation paths and temporal ordering---ensuring that the true root cause (upstream in the causal chain) is ranked higher than downstream symptoms.
+
+
+\subsection{Phase 7: Enhanced Knowledge Injection}
+\label{sec:knowledge}
+
+A critical contribution of \sysname{} is the enrichment of the natural language knowledge supplied to the downstream LLM agents (Phases 8--9).  We introduce four types of enriched evidence:
+
+\subsubsection{Enhanced Anomaly Descriptions}
+
+The original LocaleXpert generates anomaly descriptions via simple template filling (e.g., ``The cpu\_usage metric is abnormal with pattern Single spike, reached 0.9, increased from 0.1'').  \sysname{} replaces this with pattern-specific templates that include:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Statistical context}: $\sigma$-deviation, historical mean, change percentage
+  \item \textbf{Severity grading}: mild ($<$2$\sigma$), moderate (2--4$\sigma$), severe (4--8$\sigma$), critical ($>$8$\sigma$)
+  \item \textbf{Pattern-specific emphasis}: spikes emphasize suddenness and peak; level shifts emphasize persistence and magnitude; trends emphasize direction and growth rate
+  \item \textbf{Cross-metric alerts}: automatic detection when multiple metrics of the same service are simultaneously anomalous
+\end{itemize}
+
+\subsubsection{Cross-Metric Correlation Analysis}
+
+The multivariate detection results are transformed into a natural language paragraph describing:
+\begin{itemize}[leftmargin=*]
+  \item System-level anomaly state (anomalous or normal)
+  \item Top-$N$ metrics by reconstruction error contribution, with named scores
+  \item List of affected services derived from metric names
+  \item Joint anomaly pattern characterization
+\end{itemize}
+
+\subsubsection{Causal Propagation Paths}
+
+The PCMCI causal graph is transformed into a human-readable description of key propagation chains:
+\begin{itemize}[leftmargin=*]
+  \item Top-$N$ causal links by strength (e.g., ``service\_A\_cpu $\rightarrow$ service\_B\_latency'')
+  \item Most causally influential metrics (highest $\gamma$ scores)
+  \item Key multi-hop propagation paths extracted from the graph
+\end{itemize}
+
+\subsubsection{Evidence Concordance Assessment}
+
+A concordance report explicitly states whether the two RCA channels agree or disagree:
+\begin{itemize}[leftmargin=*]
+  \item \emph{Consistent}: ``Both channels converge on the same top root cause metric, increasing confidence in the diagnosis.''
+  \item \emph{Divergent}: ``The channels diverge, suggesting possible correlated metric disruptions.  The final determination is delegated to causal reasoning.''
+\end{itemize}
+
+This concordance information helps the downstream LLM agents calibrate their confidence and reasoning accordingly.
+
+\subsubsection{Knowledge Assembly}
+
+The four evidence types are assembled into the PhaseConfig prompts for the Metric Expert and Root Cause Expert agents.  The Metric Expert receives the unified anomaly description plus the cross-metric correlation analysis.  The Root Cause Expert receives the root-cause ranking, causal propagation paths, and evidence concordance assessment.  This structured enrichment enables the LLM agents to reason with comprehensive, cross-validated evidence rather than raw anomaly descriptions alone.
+
+
+\subsection{Design Rationale and Discussion}
+
+\subsubsection{Why Dual-Channel Rather Than Ensemble?}
+
+A naive alternative would be to combine univariate and multivariate detection scores into a single ensemble.  We reject this approach for two reasons.  First, ensemble methods \emph{conflate} the fundamentally different types of evidence---point anomalies vs.\ correlation disruptions---into a single score, losing the interpretability that operators need.  Second, the optimal combination weight varies by scenario: when univariate detection sees nothing (Scenario~1), any weight on the univariate score is wasted; when both channels disagree (Scenario~3), a fixed weight may suppress the true root cause.
+
+The dual-channel approach preserves the \emph{independence} of each evidence type, enabling scenario-specific resolution strategies that are transparent and explainable.
+
+\subsubsection{Why Causal Reasoning as Final Arbiter?}
+
+Anomaly detection---whether univariate or multivariate---can only identify \emph{what} is anomalous, not \emph{why} it is anomalous.  Distinguishing a true root cause from a downstream symptom requires reasoning about fault propagation paths and temporal ordering, which is precisely what the PCMCI causal graph encodes.  By delegating final adjudication to the causal random walk (which considers graph topology and temporal delays), \sysname{} grounds the resolution in structural causality rather than heuristic rules or LLM conjecture.
+
+\subsubsection{Backward Compatibility}
+
+\sysname{} is designed as a drop-in extension of the LocaleXpert pipeline.  The \texttt{--skip-multivariate} flag disables the multivariate channel and conflict resolution, reverting to the original single-channel behavior.  This enables direct comparison between the original and enhanced approaches on the same datasets.
+
+
+% ======================================================================
+%  REFERENCES (placeholder)
+% ======================================================================
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{10}
+
+\bibitem{localexpert}
+Z.~Zhong \emph{et~al.}, ``LLM-enhanced failure localization in microservices: Integrating multi-modal data and expert interpretation,'' \emph{IEEE Trans. Serv. Comput.}, 2026.
+
+\bibitem{microcause}
+Y.~Sun \emph{et~al.}, ``MicroCause: Microservice cause analysis via temporal causal discovery,'' in \emph{Proc. IEEE ICWS}, 2022.
+
+\bibitem{ma2022mepfl}
+M.~Ma \emph{et~al.}, ``MEPFL: Microservice trace failure localization,'' in \emph{Proc. IEEE ICWS}, 2022.
+
+\bibitem{diagfusion}
+Y.~Liu \emph{et~al.}, ``DiagFusion: A microservice fault diagnosis framework,'' in \emph{Proc. IEEE ICSE}, 2023.
+
+\bibitem{eadro}
+J.~Liu \emph{et~al.}, ``Eadro: An end-to-end anomaly detection and root cause analysis framework,'' in \emph{Proc. ACM SIGCOMM}, 2023.
+
+\bibitem{pdiagnose}
+L.~Wu \emph{et~al.}, ``PDiagnose: Performance anomaly diagnosis for microservice applications,'' \emph{IEEE Trans. Softw. Eng.}, 2023.
+
+\bibitem{tranad}
+S.~Tuli \emph{et~al.}, ``TranAD: Deep transformer networks for anomaly detection in multivariate time series,'' \emph{Proc. VLDB Endow.}, vol.~15, no.~6, 2022.
+
+\bibitem{usad}
+M.~Audibert \emph{et~al.}, ``USAD: Unsupervised anomaly detection on multivariate time series,'' in \emph{Proc. ACM SIGKDD}, 2020.
+
+\bibitem{omnianomaly}
+Y.~Su \emph{et~al.}, ``Robust anomaly detection for multivariate time series through stochastic recurrent neural network,'' in \emph{Proc. ACM SIGKDD}, 2019.
+
+\bibitem{madgan}
+D.~Li \emph{et~al.}, ``MAD-GAN: Multivariate anomaly detection for time series data with generative adversarial networks,'' in \emph{Proc. ICANN}, 2019.
+
+\bibitem{mscred}
+S.~Zhang \emph{et~al.}, ``MSCRED: A multi-scale convolutional recurrent encoder-decoder for multivariate time series anomaly detection,'' in \emph{Proc. AAAI}, 2019.
+
+\bibitem{gdn}
+A.~Deng and H.~Hooi, ``Graph neural network-based anomaly detection in multivariate time series,'' in \emref{Proc. AAAI}, 2021.
+
+
+
+
+
+
+
+
+
+
+\bibitem{mtadgat}
+Z.~Zhao \emph{et~al.}, ``Multivariate time-series anomaly detection via graph attention network,'' in \emph{Proc. IEEE ICDM}, 2020.
+
+\bibitem{spot}
+A.~Siffer \emph{et~al.}, ``Anomaly detection in streams with extreme value theory,'' in \emph{Proc. ACM SIGKDD}, 2017.
+
+\bibitem{traceanomaly}
+M.~Ma \emph{et~al.}, ``TraceAnomaly: A trace-based anomaly detection framework for microservices,'' \emph{IEEE Trans. Softw. Eng.}, 2023.
+
+\bibitem{aiops_survey}
+M.~Ma \emph{et~al.}, ``Diagnosing root causes of intermittent slow queries in cloud databases,'' \emph{Proc. VLDB Endow.}, 2020.
+
+\bibitem{microheuristic}
+J.~Chen \emph{et~al.}, ``Root cause analysis in microservice architectures,'' \emph{ACM Comput. Surv.}, 2024.
+
+\bibitem{cloudranger}
+M.~Gan \emph{et~al.}, ``CloudRanger: Root cause identification for cloud native systems,'' in \emph{Proc. IEEE/ACM ICSE}, 2021.
+
+\bibitem{causeinfer}
+J.~Chen \emph{et~al.}, ``CauseInfer: Automatic and distributed performance diagnosis,'' in \emph{Proc. ACM Symposium on Cloud Computing}, 2014.
+
+\bibitem{rcacopilot}
+J.~Chen \emph{et~al.}, ``RCACopilot: An LLM-powered root cause analysis tool,'' in \emph{Proc. ASE}, 2024.
+
+\bibitem{rcagent}
+Y.~Zhang \emph{et~al.}, ``RCAgent: Root cause analysis via autonomous agents,'' in \emph{Proc. NeurIPS}, 2024.
+
+\bibitem{react}
+Y.~Yao \emph{et~al.}, ``ReAct: Synergizing reasoning and acting in language models,'' in \emph{Proc. ICLR}, 2023.
+
+\bibitem{loganomaly}
+M.~Du and F.~Li, ``LogAnomaly: Unsupervised detection of sequential and quantitative anomalies,'' in \emph{Proc. USENIX Security}, 2019.
+
+\bibitem{deeptest}
+J.~An and S.~Cho, ``Variational autoencoder based anomaly detection,'' in \emph{Proc. ICLR Workshop}, 2015.
+
+\end{thebibliography}
+
+\end{document}

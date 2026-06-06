@@ -270,11 +270,135 @@ report.save_markdown("evaluation_results/report.md")
 ### G-sim
 
 - 调用 LLM API，让模型对生成推理 vs 参考推理打分（0-1）
-- 默认使用项目已配置的 DeepSeek API
-- 可通过 `--gsim-model` 切换模型
+- 默认使用 `glm-4.7`（通过 ZhipuAI SDK + Coding 端点）
+- 可通过 `--gsim-model` 切换单个评委模型
+- 支持多评委打分：`--gsim-judges glm-4.7 gpt-4o` 取平均分
 
-### W-rate
+### W-rate（LLM 投票替代人工）
 
-- 需要人工评估数据（3 位工程师投票）
-- 通过 `metrics.win_rate(votes, method_name)` 计算
-- 本模块仅提供计算框架，人工数据需单独收集
+- **原论文**：3 位运维工程师独立投票，多数票胜出
+- **本实现**：3 个 LLM 投票者（同一模型，不同 temperature）替代人工投票
+  - Voter 1: temperature=0.1（保守型）
+  - Voter 2: temperature=0.3（均衡型）
+  - Voter 3: temperature=0.5（探索型）
+- 每个 Voter 独立评估所有方法的推理输出，投票选出最佳
+- 平局处理：1-1-1 时发起仲裁调用，模拟论文中"讨论后二次投票"
+- 通过 `--compute-wrate --methods-log MethodA=a.log MethodB=b.log` 使用
+
+---
+
+## 八、LLM 替代人工评估方案
+
+论文 [171] 原本需要三位运维工程师完成以下工作，现已全部用 LLM 替代：
+
+| 论文要求 | LLM 替代方案 | 实现模块 |
+|----------|-------------|----------|
+| 工程师撰写参考推理文本 | 三阶段 LLM 生成流水线（独立生成→交叉审阅→验证） | `reference_generator.py` |
+| GPT-4 评估语义相似度 | 多评委 LLM 打分（默认 glm-4.7） | `metrics.py` → `gpt_similarity_multi_judge()` |
+| 3 位工程师投票 W-rate | 3 个 LLM 投票者（不同 temperature）+ 仲裁机制 | `llm_voter.py` |
+
+### 8.1 新增文件
+
+```
+evaluation/
+├── llm_client.py              # 统一 LLM 客户端（支持 OpenAI 兼容 + ZhipuAI）
+├── reference_generator.py     # 参考推理文本生成流水线
+├── llm_voter.py               # LLM 投票系统（替代人工 W-rate）
+```
+
+### 8.2 参考文本生成流水线（三阶段）
+
+**Stage 1 — 独立生成**：3 次 LLM 调用（temperature=0.1, 0.3, 0.5），模拟三位工程师独立撰写
+
+**Stage 2 — 交叉审阅**：将 3 份草稿提交 LLM，综合为最优参考文本
+
+**Stage 3 — 验证**：验证最终文本是否正确识别 ground truth，逻辑是否自洽
+
+生成的参考文本保存为 `evaluation/reference_texts/{case_id}_reference.json`。
+
+### 8.3 API 配置
+
+当前使用智谱 GLM-4.7（Coding 端点）：
+
+```
+MODEL: glm-4.7
+API_BASE: https://open.bigmodel.cn/api/coding/paas/v4
+SDK: zhipuai
+```
+
+后续切换到真实 GPT-4o / Gemini-2.5-Pro 时，只需修改 `evaluation/llm_client.py` 中的 `_DEFAULT_CONFIGS` 或通过 CLI 参数指定。
+
+### 8.4 完整使用示例
+
+```bash
+# Step 1: 生成参考推理文本（替代人工撰写，较慢）
+python -m evaluation.run_evaluation \
+    --log experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --generate-references \
+    --ref-model glm-4.7 \
+    --ref-output evaluation/reference_texts
+
+# Step 2: 计算推理质量指标（BLEU-4, ROUGE-L, G-sim）
+python -m evaluation.run_evaluation \
+    --log experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --ref-input evaluation/reference_texts \
+    --gsim --gsim-model glm-4.7 \
+    --output evaluation_results/
+
+# Step 3: 计算 W-rate（比较多个方法）
+python -m evaluation.run_evaluation \
+    --compute-wrate \
+    --methods-log \
+        LocaleXpert=experiments_localexpert.log \
+        DualChannel=experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --output evaluation_results/
+```
+
+### 8.5 Python API 使用
+
+```python
+from evaluation import (
+    Evaluator, ReferenceGenerator, CaseData,
+    LLMVoter, gpt_similarity_multi_judge,
+)
+
+# 1. 生成参考文本
+gen = ReferenceGenerator(model_name="glm-4.7")
+refs = gen.generate_for_case(case_data)
+refs = gen.generate_batch(cases, output_dir="evaluation/reference_texts")
+
+# 2. G-sim 多评委打分
+result = gpt_similarity_multi_judge(
+    hypothesis="生成的推理...",
+    reference="参考推理...",
+    judge_models=["glm-4.7", "gpt-4o"],
+)
+print(result)  # {'scores': {'glm-4.7': 0.8, ...}, 'mean': 0.8}
+
+# 3. LLM 投票
+voter = LLMVoter(model_name="glm-4.7")
+vote_result = voter.vote_case(
+    case_id="0701_11-50",
+    methods_output={
+        "MethodA": {"TraceExpert": "...", "MetricExpert": "..."},
+        "MethodB": {"TraceExpert": "...", "MetricExpert": "..."},
+    },
+    ground_truth="mobservice1",
+)
+print(f"Winner: {vote_result.winner}, Tie: {vote_result.is_tie}")
+
+# 4. 完整批量评估
+ev = Evaluator(model_name="glm-4.7")
+report = ev.evaluate_batch(
+    parsers=parsed_logs,
+    ground_truth_pkl_dir="Datasets/GAIA/fault_injection_tracerank/",
+    generate_references=True,
+    compute_gsim=True,
+    compute_wrate=True,
+    methods_logs={"MethodA": "a.log", "MethodB": "b.log"},
+)
+report.save_json("results.json")
+```

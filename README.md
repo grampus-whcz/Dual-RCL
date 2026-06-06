@@ -268,3 +268,121 @@ Phase 6:  LLM 比较两个完整根因排名 → 冲突场景判定 → 因果�
    - 如果单变量检测到的 A 只是表象，而多变量检测捕捉到的 B 才是触发 A 的隐式源头，RCA 也会通过拓扑纠偏定位到 B
 
 这也印证了文献 [171] LocaleXpert 的核心思想：**不盲信单一模态，而是让多模态专家在推理层面交叉验证**。
+
+---
+
+### 增强异常描述生成与 LLM 知识注入（Enhanced Anomaly Description + Knowledge Injection）
+
+#### 背景
+
+文献 [171] 消融实验表明，异常描述模块对最终推理质量影响最大（w/o AD 导致推理质量显著下降）。同时，多变量检测结果和 PCMCI 因果路径虽已计算出来，但未以自然语言形式传递给 LLM agent，限制了 LLM 推理的深度和准确性。
+
+本次增强解决了两个问题：
+1. **异常描述质量不足**：原 `generate_metric_describe()` 仅做简单的字符串拼接，缺少统计特征和模式化描述
+2. **LLM 知识注入不完整**：Phase 7 注入的知识仅包含异常描述文本和根因排名，缺少跨指标相关性、因果传播路径和双通道一致性分析
+
+#### 优化 1：增强异常描述生成
+
+**文件：** `metric_anomaly.py` — 新增 `enhance_metric_describe()` 及辅助函数
+
+**实现内容：**
+
+| 功能 | 说明 |
+|------|------|
+| **11 类模式模板** | 每种异常模式有专门的描述模板：spike 强调突然性、level shift 强调持续性和变化幅度、trend 强调方向和增长率、fluctuations 强调波动范围 |
+| **统计特征提取** | 自动计算均值、标准差、峰值、谷值、变化幅度百分比（Δ%）、持续时长、σ 偏离度 |
+| **严重等级分类** | mild / moderate / severe / critical 四级（基于 σ 偏离度） |
+| **跨指标关联提示** | 同一服务多个指标同时异常时，自动添加 `[Cross-Metric Alert]` 提示 |
+
+**输出对比示例：**
+
+原版输出：
+```
+The cpu_usage metric for service mobservice1 is abnormal, with anomaly pattern of 
+Single spike, started at 2021-07-01 11:50:00, ended at 2021-07-01 11:51:00, reach 
+0.9, increase from the previous 0.1, anomaly score is 4.5.
+```
+
+增强版输出：
+```
+The cpu_usage metric for service mobservice1 exhibited a sudden spike reaching 0.9000, 
+which is approximately 9.0σ above the historical mean of 0.1000. The spike occurred 
+around 2021-07-01 11:50:00, rising sharply from 0.1000 and returning to normal levels 
+within approximately 1 minutes. Severity: [SEVERE].
+```
+
+**11 类模式的差异化描述策略：**
+
+| 模式 | 描述侧重点 |
+|------|-----------|
+| Single spike / Single dip | 突发性、峰值/谷值、σ 偏离度、恢复时间 |
+| Multiple spikes / Multiple dips | 重复次数、峰值、暗示负载突发或资源争用 |
+| Level shift up / Level shift down | 前后均值对比、变化百分比、持续性 |
+| Transient level shift up / down | 临时性变化、部分恢复、持续时间 |
+| Steady increase / Steady decrease | 趋势方向、增长率、时间跨度 |
+| Fluctuations | 波动范围、变异系数、稳定性分析 |
+
+#### 优化 2：多变量检测结果 + 因果路径注入 LLM 推理
+
+**文件：** `run.py` — 新增 3 个知识生成函数 + Phase 7 注入增强
+
+**新增函数：**
+
+| 函数 | 作用 |
+|------|------|
+| `generate_multivariate_knowledge(multi_results, data_head)` | 将多变量检测结果转为跨指标相关性自然语言描述，包含系统整体异常状态、Top-N 异常指标排名、各指标重建误差分数、受影响服务列表 |
+| `generate_causal_knowledge(causal_graph, data_head, gamma)` | 将 PCMCI 因果图转为传播路径描述（A → B → C 格式），包含因果链接数量、Top-N 最具因果影响力的指标（γ 分数）、关键传播路径 |
+| `generate_concordance_report(multi_results, root_metric_uni, root_metric_multi)` | 生成双通道一致性分析报告：单变量和多变量通道是否指向同一根因，一致时提升置信度，分歧时提示可能存在相关性破坏 |
+
+**Phase 7 注入增强：**
+
+注入前（MetricAnalysis prompt）：
+```
+Knowledge:
+Anomaly description:{异常描述文本}
+{根因指标排名}
+```
+
+注入后（MetricAnalysis prompt）：
+```
+Knowledge:
+Anomaly description:{增强版异常描述，含统计特征和严重等级}
+{根因指标排名}
+
+[Cross-Metric Correlation Analysis]:
+{多变量检测结果描述 — 系统异常状态、跨指标相关性、重建误差排名、受影响服务}
+```
+
+注入前（RootCauseAnalysis prompt）：
+```
+Knowledge: {根因指标排名}
+Top5 root cause:{服务排名}
+```
+
+注入后（RootCauseAnalysis prompt）：
+```
+Knowledge: {根因指标排名}
+Top5 root cause services:{服务排名}
+
+[Causal Propagation Paths]:
+{PCMCI 因果图的关键传播路径，Top-N 因果影响力指标，如:
+  (1) mobservice1_cpu → redisservice2_latency
+  (2) mobservice1_cpu → webservice1_response
+  (3) redisservice2_latency → webservice1_response}
+
+[Evidence Concordance]:
+{双通道一致性分析 — 单变量和多变量通道是否指向同一根因，
+ 一致时"converge on the same top root cause metric"，
+ 分歧时"divergence suggests correlated metric disruptions"}
+```
+
+**向后兼容：** 无多变量检测结果时（`multi_results is None`），自动退化为原有注入方式，不影响单通道流水线的行为。
+
+#### 相关文件
+
+| 文件 | 改动类型 | 说明 |
+|------|----------|------|
+| `metric_anomaly.py` | 新增函数 | `enhance_metric_describe()`、`_generate_pattern_description()`、`_classify_severity()` 等 |
+| `run.py` Phase 4A | 修改调用 | 调用 `enhance_metric_describe()` 替代原 `generate_metric_describe()` |
+| `run.py` 新增函数 | 新增 | `generate_multivariate_knowledge()`、`generate_causal_knowledge()`、`generate_concordance_report()` |
+| `run.py` Phase 7 | 修改注入 | 增强 MetricAnalysis 和 RootCauseAnalysis 的 prompt 内容 |

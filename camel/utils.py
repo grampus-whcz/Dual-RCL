@@ -94,6 +94,8 @@ def num_tokens_from_messages(
         ModelType.DEEPSEEK_R1_0528,
         ModelType.OLLAMA_QWEN3_14B,
         ModelType.OLLAMA_QWEN3_8B,
+        ModelType.GLM_4_5,
+        ModelType.GLM_4_7,
     }:
         return count_tokens_openai_chat_models(messages, encoding)
     else:
@@ -129,6 +131,8 @@ def get_model_token_limit(model_type: ModelType) -> int:
         ModelType.DEEPSEEK_R1_0528:65536,
         ModelType.OLLAMA_QWEN3_14B:32768,
         ModelType.OLLAMA_QWEN3_8B:32768,
+        ModelType.GLM_4_5: 128000,
+        ModelType.GLM_4_7: 128000,
     }
     try:
         return model_token_limit[model_type]

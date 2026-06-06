@@ -28,7 +28,7 @@ from micro import run_SPOT,get_eta,run_pcmci,get_Q_matrix,get_Q_matrix_part_corr
 
 import numpy as np
 
-from metric_anomaly import *
+from metric_anomaly import generate_metric_describe, enhance_metric_describe, CNNClassifier
 from trace_anomaly import *
 
 from mepfl import *
@@ -43,6 +43,10 @@ from failure_localization import AVAILABLE_METHODS as RCA_METHODS
 
 os.environ['OPENAI_API_KEY'] = 'sk-e8bbbd81c0dc42dfa73d557012d1a3dd'
 os.environ['BASE_URL'] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# ZhipuAI GLM API credentials (used when --model starts with 'glm-')
+os.environ['ZHIPUAI_API_KEY'] = 'e2bb1c9dcfea446896cdfb3735c98a10.ZwHWlBTzph3t6RIa'
+os.environ['ZHIPUAI_BASE_URL'] = 'https://open.bigmodel.cn/api/coding/paas/v4'
 
 # ------------------------------------------------------------------
 #  Structured logger for the main pipeline
@@ -113,6 +117,223 @@ def build_multivariate_eta(data_head, multi_results, reference_eta):
     if eta_multi.max() > 0 and reference_eta.max() > 0:
         eta_multi = eta_multi / eta_multi.max() * reference_eta.max()
     return eta_multi
+
+
+# =====================================================================
+#  Knowledge generation functions for LLM prompt injection
+# =====================================================================
+
+def generate_multivariate_knowledge(multi_results, data_head):
+    """Convert multivariate detection results into natural language for LLM.
+
+    Generates a structured description of cross-metric correlation anomalies,
+    including which metrics are jointly anomalous and their relative severity.
+
+    Args:
+        multi_results: dict from ``run_multivariate_detection()`` with keys
+            'is_anomalous', 'top5_metrics', 'top5_services', 'feature_ranking'.
+        data_head: list of metric name strings.
+
+    Returns:
+        Natural language string describing the multivariate analysis findings.
+    """
+    if not multi_results:
+        return ''
+
+    lines = []
+
+    # System-level anomaly status
+    is_anom = multi_results.get('is_anomalous', False)
+    if is_anom:
+        lines.append(
+            "Multivariate anomaly detection confirms the system is in an "
+            "anomalous state. Multiple metrics are exhibiting correlated "
+            "abnormal behavior, suggesting a systemic issue rather than "
+            "isolated metric noise."
+        )
+    else:
+        lines.append(
+            "Multivariate anomaly detection indicates the system-level "
+            "metric correlations are within normal bounds."
+        )
+
+    # Top anomalous metrics with scores
+    top5 = multi_results.get('top5_metrics', [])
+    if top5:
+        lines.append(f"Top-{len(top5)} most anomalous metrics (by reconstruction error):")
+        for i, metric in enumerate(top5):
+            lines.append(f"  ({i+1}) {metric}")
+
+    # Feature ranking details (top 10)
+    ranking = multi_results.get('feature_ranking', [])
+    if ranking:
+        top_n = min(10, len(ranking))
+        lines.append(f"Per-metric anomaly contribution (top {top_n}):")
+        for idx, score in ranking[:top_n]:
+            if idx < len(data_head):
+                lines.append(f"  - {data_head[idx]}: score {score:.4f}")
+
+    # Affected services
+    top5_svc = multi_results.get('top5_services', [])
+    if top5_svc:
+        unique_svcs = list(dict.fromkeys(top5_svc))  # deduplicate preserving order
+        lines.append(
+            f"Services most impacted by correlated metric anomalies: "
+            f"{', '.join(unique_svcs)}."
+        )
+
+    return '\n'.join(lines)
+
+
+def generate_causal_knowledge(causal_graph, data_head, gamma):
+    """Convert PCMCI causal graph into natural language propagation paths.
+
+    Extracts the most important causal paths from the graph, weighted by
+    the gamma (combined visitation + anomaly) scores, and describes them
+    in a format that helps LLMs understand fault propagation.
+
+    Args:
+        causal_graph: networkx.DiGraph from ``get_links()``.
+        data_head: list of metric name strings.
+        gamma: list of combined scores from ``get_gamma()``.
+
+    Returns:
+        Natural language string describing causal propagation paths.
+    """
+    if causal_graph is None or causal_graph.number_of_edges() == 0:
+        return 'No significant causal relationships were discovered by PCMCI.'
+
+    lines = []
+
+    # Graph overview
+    n_nodes = causal_graph.number_of_nodes()
+    n_edges = causal_graph.number_of_edges()
+    lines.append(
+        f"PCMCI causal discovery identified {n_edges} significant causal links "
+        f"across {n_nodes} metrics (α=0.05)."
+    )
+
+    # Top influential nodes (by gamma score)
+    if gamma and len(gamma) == len(data_head):
+        gamma_ranked = sorted(
+            enumerate(gamma), key=lambda x: x[1], reverse=True
+        )
+        top_n = min(5, len(gamma_ranked))
+        lines.append(f"\nTop-{top_n} most causally influential metrics (γ score):")
+        for rank, (idx, score) in enumerate(gamma_ranked[:top_n]):
+            if idx < len(data_head):
+                lines.append(f"  ({rank+1}) {data_head[idx]}: γ={score:.4f}")
+
+    # Key propagation paths — find paths starting from high-gamma nodes
+    if gamma and len(gamma) == len(data_head):
+        # Identify top root cause candidates (highest gamma)
+        top_candidates = [idx for idx, _ in gamma_ranked[:3] if idx < len(data_head)]
+
+        paths_found = []
+        for source_idx in top_candidates:
+            try:
+                # BFS to find short propagation paths (max depth 3)
+                visited = {source_idx}
+                queue = [(source_idx, [data_head[source_idx]])]
+                while queue and len(paths_found) < 5:
+                    node, path = queue.pop(0)
+                    if len(path) >= 4:  # max path length 3 edges
+                        continue
+                    for neighbor in causal_graph.successors(node):
+                        if neighbor not in visited and neighbor < len(data_head):
+                            new_path = path + [data_head[neighbor]]
+                            if len(new_path) >= 2:
+                                paths_found.append(new_path)
+                            visited.add(neighbor)
+                            queue.append((neighbor, new_path))
+            except Exception:
+                continue
+
+        if paths_found:
+            # Deduplicate and select most informative paths
+            unique_paths = []
+            seen = set()
+            for p in paths_found:
+                key = ' → '.join(p)
+                if key not in seen:
+                    seen.add(key)
+                    unique_paths.append(p)
+
+            lines.append(f"\nKey causal propagation paths ({len(unique_paths)} discovered):")
+            for i, path in enumerate(unique_paths[:5]):
+                arrow_path = ' → '.join(path)
+                lines.append(f"  ({i+1}) {arrow_path}")
+        else:
+            # Fallback: list direct edges from top candidates
+            lines.append("\nDirect causal links from top candidates:")
+            count = 0
+            for source_idx in top_candidates:
+                if source_idx < len(data_head):
+                    for target in causal_graph.successors(source_idx):
+                        if target < len(data_head) and count < 8:
+                            lines.append(
+                                f"  - {data_head[source_idx]} → {data_head[target]}"
+                            )
+                            count += 1
+
+    return '\n'.join(lines)
+
+
+def generate_concordance_report(
+    multi_results,
+    root_metric_uni,
+    root_metric_multi,
+):
+    """Generate a concordance report comparing dual-channel analysis results.
+
+    Describes whether the univariate and multivariate channels agree on the
+    root cause, which is valuable context for the RootCauseAnalysis agent.
+
+    Args:
+        multi_results: dict from multivariate detection (or None).
+        root_metric_uni: Univariate RCA ranking string.
+        root_metric_multi: Multivariate RCA ranking string (or None).
+
+    Returns:
+        Natural language string describing channel concordance.
+    """
+    if not multi_results:
+        return 'Only univariate (single-metric) analysis was performed.'
+
+    lines = []
+
+    # Parse top metric from each channel
+    def _parse_top(s):
+        if not s:
+            return None
+        m = re.search(r'\(1\)([^,.)]+)', s)
+        return m.group(1).strip() if m else None
+
+    top_uni = _parse_top(root_metric_uni)
+    top_multi = _parse_top(root_metric_multi)
+
+    if top_uni and top_multi:
+        if top_uni == top_multi:
+            lines.append(
+                f"Both univariate and multivariate analysis channels converge on "
+                f"the same top root cause metric: '{top_uni}'. This strong "
+                f"concordance increases confidence in the diagnosis."
+            )
+        else:
+            lines.append(
+                f"The univariate channel identifies '{top_uni}' as the top root "
+                f"cause metric, while the multivariate channel identifies "
+                f"'{top_multi}'. This divergence suggests that the fault may "
+                f"involve correlated metric disruptions that are not visible "
+                f"through single-metric analysis alone."
+            )
+    elif top_uni:
+        lines.append(
+            f"Univariate analysis identified '{top_uni}' as the top root cause. "
+            f"Multivariate analysis results are available for cross-reference."
+        )
+
+    return '\n'.join(lines)
 
 
 # Converted to Timestamps
@@ -210,8 +431,8 @@ def get_args() -> argparse.Namespace:
         help='Name of the AIOps case, your report will be generated in Report/name_namespace_timestamp',
     )
     parser.add_argument(
-        '--model', type=str, default='deepseek-r1-0528',
-        help='Large language model. API models: "deepseek-r1-0528", "LLAMA_3_8B", '
+        '--model', type=str, default='glm-4.5',
+        help='Large language model. API models: "glm-4.5", "glm-4.7", "deepseek-r1-0528", '
              '"GPT_3_5_TURBO", "GPT_4". '
              'Local Ollama: "ollama-qwen3-14b", "ollama-qwen3-8b"',
     )
@@ -253,6 +474,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         '--tvdig-model', type=str, default=None,
         help='Path to TVDiag model checkpoint directory (required if --rca-method=tvdig)',
+    )
+    parser.add_argument(
+        '--report-dir', type=str, default=None,
+        help='Output directory for reports and logs (default: Report/). '
+             'Use different directories to avoid overwrites when comparing methods.',
     )
     return parser.parse_args()
 
@@ -380,7 +606,7 @@ def main(args: argparse.Namespace):
 
         # Skip to ChatChain initialization
         _run_chatchain(args, config_path, config_phase_path, config_role_path,
-                       phase_t0=None)
+                       phase_t0=None, report_dir=args.report_dir)
         return
 
     # =================================================================
@@ -511,8 +737,9 @@ def main(args: argparse.Namespace):
     # --- 4A: Univariate Anomaly Detection (CNN pattern + SPOT) ------
     logger.info("  [4A] Univariate Anomaly Detection (CNN + SPOT) — start")
     print("\n  [4A] Univariate Anomaly Detection (CNN + SPOT)")
-    univariate_anomaly_descriptions = generate_metric_describe(
-        clf, f'{date_result}_metric_fault/{files_metric}', root_service[:5]
+    univariate_anomaly_descriptions = enhance_metric_describe(
+        clf, f'{date_result}_metric_fault/{files_metric}', root_service[:5],
+        data_head=data_head,
     )
     metric_an = ''
     for index, value in enumerate(univariate_anomaly_descriptions):
@@ -742,31 +969,67 @@ def main(args: argparse.Namespace):
 
     # ==================================================================
     #  Phase 7: Write Unified Metric Knowledge to PhaseConfig
+    #  Enhanced with: multivariate analysis + causal propagation paths
     # ==================================================================
-    t0_p7 = _phase_banner("Phase 7", "Write Unified Knowledge to PhaseConfig")
+    t0_p7 = _phase_banner("Phase 7", "Write Enhanced Knowledge to PhaseConfig")
 
     with open(config_phase_path) as f:
         dataconfig = json.load(f)
 
-    # Trace knowledge (unchanged from Phase 1-2)
+    # --- Generate enriched knowledge paragraphs ---
+    multi_knowledge = ''
+    if multi_results is not None:
+        multi_knowledge = generate_multivariate_knowledge(multi_results, data_head)
+        logger.info(f"  [Knowledge] Multivariate analysis paragraph: {len(multi_knowledge)} chars")
+
+    causal_knowledge = generate_causal_knowledge(causal_graph, data_head, gamma_uni)
+    logger.info(f"  [Knowledge] Causal path paragraph: {len(causal_knowledge)} chars")
+
+    concordance_knowledge = generate_concordance_report(
+        multi_results, root_metric_uni, root_metric_multi,
+    )
+
+    # --- Trace knowledge (unchanged from Phase 1-2) ---
     dataconfig['TraceAnalysis']['phase_prompt'][0] = (
         "Knowledge:\n Anomaly description:" + trace_an + '\nTop5 root cause:' + root_se
     )
 
-    # Metric knowledge (now unified from conflict resolution)
-    dataconfig['MetricAnalysis']['phase_prompt'][0] = (
-        "Knowledge: \nAnomaly description:" + metric_an_final + '\n' + root_metric_final
+    # --- Metric knowledge (enhanced with multivariate analysis) ---
+    metric_prompt = (
+        "Knowledge:\n"
+        "Anomaly description:" + metric_an_final + '\n'
+        + root_metric_final + '\n'
     )
+    if multi_knowledge:
+        metric_prompt += (
+            "\n[Cross-Metric Correlation Analysis]:\n"
+            + multi_knowledge + '\n'
+        )
+    dataconfig['MetricAnalysis']['phase_prompt'][0] = metric_prompt
 
-    # Root cause knowledge (unified)
-    dataconfig['RootCauseAnalysis']['phase_prompt'][0] = (
-        "Knowledge: " + root_metric_final + 'Top5 root cause:' + root_se
+    # --- Root cause knowledge (enhanced with causal paths + concordance) ---
+    rc_prompt = (
+        "Knowledge: " + root_metric_final
+        + '\nTop5 root cause services:' + root_se + '\n'
     )
+    if causal_knowledge:
+        rc_prompt += (
+            "\n[Causal Propagation Paths]:\n"
+            + causal_knowledge + '\n'
+        )
+    if multi_results is not None:
+        rc_prompt += (
+            "\n[Evidence Concordance]:\n"
+            + concordance_knowledge + '\n'
+        )
+    dataconfig['RootCauseAnalysis']['phase_prompt'][0] = rc_prompt
 
     with open(config_phase_path, 'w') as file:
         json.dump(dataconfig, file)
-    logger.info("  PhaseConfig updated with unified knowledge.")
-    print("  PhaseConfig updated with unified knowledge.")
+    logger.info("  PhaseConfig updated with enhanced knowledge "
+                "(multivariate + causal paths + concordance).")
+    print("  PhaseConfig updated with enhanced knowledge "
+          "(multivariate + causal paths + concordance).")
     _phase_done("Phase 7", t0_p7)
 
     # ==================================================================
@@ -828,7 +1091,7 @@ def main(args: argparse.Namespace):
     t0_p9 = _phase_banner("Phase 9", "ChatChain LLM Multi-Agent Reasoning")
 
     _run_chatchain(args, config_path, config_phase_path, config_role_path,
-                   phase_t0=t0_p9)
+                   phase_t0=t0_p9, report_dir=args.report_dir)
 
     # --- Evaluation: end-to-end latency ---
     total_elapsed = time.time() - t0_p1
@@ -849,6 +1112,7 @@ def _run_chatchain(
     config_phase_path: pathlib.Path,
     config_role_path: pathlib.Path,
     phase_t0: float = None,
+    report_dir: str = None,
 ):
     """Initialise and execute the ChatChain LLM multi-agent pipeline.
 
@@ -858,6 +1122,7 @@ def _run_chatchain(
     Args:
         phase_t0: optional start-time from the calling Phase banner,
                   used to report total elapsed time on completion.
+        report_dir: output directory for reports and logs (default: Report/).
     """
     args2type = {
         'GPT_3_5_TURBO': ModelType.GPT_3_5_TURBO,
@@ -871,6 +1136,8 @@ def _run_chatchain(
         'deepseek-r1-0528': ModelType.DEEPSEEK_R1_0528,
         'ollama-qwen3-14b': ModelType.OLLAMA_QWEN3_14B,
         'ollama-qwen3-8b': ModelType.OLLAMA_QWEN3_8B,
+        'glm-4.5': ModelType.GLM_4_5,
+        'glm-4.7': ModelType.GLM_4_7,
     }
 
     chat_chain = ChatChain(
@@ -882,6 +1149,7 @@ def _run_chatchain(
         namespace=args.namespace,
         model_type=args2type[args.model],
         docs_path=args.path,
+        report_dir=report_dir,
     )
 
     logging.basicConfig(

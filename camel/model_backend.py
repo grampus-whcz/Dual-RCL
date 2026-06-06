@@ -156,6 +156,86 @@ class StubModel(ModelBackend):
         )
 
 
+class ZhipuAIModel(ModelBackend):
+    r"""ZhipuAI GLM API in a unified ModelBackend interface.
+
+    Uses the ZhipuAI SDK to call GLM models via the Coding endpoint.
+    Returns responses in OpenAI-compatible format so the rest of the
+    ChatChain pipeline works without modification.
+    """
+
+    def __init__(self, model_type: ModelType, model_config_dict: Dict) -> None:
+        super().__init__()
+        self.model_type = model_type
+        self.model_config_dict = model_config_dict
+        self.api_key = os.environ.get('ZHIPUAI_API_KEY', '')
+        self.base_url = os.environ.get('ZHIPUAI_BASE_URL',
+                                       'https://open.bigmodel.cn/api/coding/paas/v4')
+
+    def run(self, *args, **kwargs):
+        from zhipuai import ZhipuAI
+        import openai as _openai
+
+        client = ZhipuAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+
+        max_output_tokens = self.model_config_dict.get('max_tokens', 8192)
+
+        response = client.chat.completions.create(
+            model=self.model_type.value,
+            messages=kwargs["messages"],
+            temperature=self.model_config_dict.get('temperature', 0.2),
+            max_tokens=max_output_tokens,
+            top_p=self.model_config_dict.get('top_p', 0.95),
+        )
+
+        # Log token usage
+        if hasattr(response, 'usage') and response.usage:
+            log_visualize(
+                "**[ZhipuAI_Usage_Info Receive]**\n"
+                f"prompt_tokens: {response.usage.prompt_tokens}\n"
+                f"completion_tokens: {response.usage.completion_tokens}\n"
+                f"total_tokens: {response.usage.total_tokens}\n"
+            )
+
+        # Convert to OpenAI-compatible ChatCompletion object
+        from openai.types.chat import ChatCompletion, ChatCompletionMessage
+        import time as _time
+
+        content = response.choices[0].message.content
+        finish_reason = response.choices[0].finish_reason or 'stop'
+
+        msg = ChatCompletionMessage(
+            role="assistant",
+            content=content,
+        )
+
+        openai_response = ChatCompletion(
+            id=f"zhipu-{int(_time.time())}",
+            object="chat.completion",
+            created=int(_time.time()),
+            model=self.model_type.value,
+            choices=[
+                dict(
+                    index=0,
+                    message=msg,
+                    finish_reason=finish_reason,
+                )
+            ],
+            usage=(
+                _openai.types.CompletionUsage(
+                    prompt_tokens=response.usage.prompt_tokens,
+                    completion_tokens=response.usage.completion_tokens,
+                    total_tokens=response.usage.total_tokens,
+                ) if (hasattr(response, 'usage') and response.usage) else None
+            ),
+        )
+
+        return openai_response
+
+
 class ModelFactory:
     r"""Factory of backend models.
 
@@ -168,6 +248,11 @@ class ModelFactory:
         default_model_type = ModelType.GPT_3_5_TURBO
 
         if model_type in {
+            ModelType.GLM_4_5,
+            ModelType.GLM_4_7,
+        }:
+            model_class = ZhipuAIModel
+        elif model_type in {
             ModelType.GPT_3_5_TURBO,
             ModelType.GPT_4,
             ModelType.GPT_4_32K,

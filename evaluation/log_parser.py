@@ -65,12 +65,15 @@ CAUSAL_GRAPH_RE = re.compile(r'Causal graph:\s*(\d+) nodes,\s*(\d+) edges')
 class LogParser:
     """Parse run.py stdout/stderr logs into structured evaluation records."""
 
-    def __init__(self, log_path: str):
+    def __init__(self, log_path: str = None, lines: List[str] = None):
         """
         Args:
             log_path: Path to the run.py log file (or stdout capture).
+            lines:    Pre-loaded log lines (alternative to file path).
+                      When provided, the file is not re-read.
         """
-        self.log_path = log_path
+        self.log_path = log_path or '<memory>'
+        self._init_lines: Optional[List[str]] = lines
         self.raw_lines: List[str] = []
         self.eval_records: List[dict] = []
         self.phase_latencies: Dict[str, float] = {}
@@ -82,11 +85,13 @@ class LogParser:
         Returns:
             self (for chaining).
         """
-        if not os.path.exists(self.log_path):
-            raise FileNotFoundError(f"Log file not found: {self.log_path}")
-
-        with open(self.log_path, 'r', encoding='utf-8', errors='replace') as f:
-            self.raw_lines = f.readlines()
+        if self._init_lines is not None:
+            self.raw_lines = self._init_lines
+        else:
+            if not os.path.exists(self.log_path):
+                raise FileNotFoundError(f"Log file not found: {self.log_path}")
+            with open(self.log_path, 'r', encoding='utf-8', errors='replace') as f:
+                self.raw_lines = f.readlines()
 
         self._extract_eval_records()
         self._extract_phase_latencies()
@@ -362,3 +367,51 @@ def lookup_ground_truth(
         return gt_map[date_mmdd][best_time]
 
     return None
+
+
+def parse_multi_case_log(log_path: str) -> List[LogParser]:
+    """Parse a single log file containing multiple concatenated cases.
+
+    Experiments scripts redirect stdout from multiple ``run.py`` invocations
+    into one file (e.g. ``experiments_localexpert.log``).  Each case starts
+    with an ``[EVAL] {"type": "task_parsed", ...}`` record.  This function
+    splits the file at those boundaries and returns one ``LogParser`` per case.
+
+    If the file contains no ``task_parsed`` records (single-case or plain
+    ChatChain log), a single-element list is returned.
+
+    Args:
+        log_path: Path to the multi-case experiments log file.
+
+    Returns:
+        List of parsed LogParser objects, one per case.
+    """
+    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+        all_lines = f.readlines()
+
+    # Find the line index of each [EVAL] task_parsed record
+    boundaries: List[int] = []
+    for i, line in enumerate(all_lines):
+        m = EVAL_LINE_RE.search(line.strip())
+        if m:
+            try:
+                rec = json.loads(m.group(1))
+                if rec.get('type') == 'task_parsed':
+                    boundaries.append(i)
+            except json.JSONDecodeError:
+                pass
+
+    if not boundaries:
+        # Single case — delegate to normal LogParser
+        return [LogParser(log_path=log_path).parse()]
+
+    # Split into per-case segments
+    parsers: List[LogParser] = []
+    for j, start in enumerate(boundaries):
+        end = boundaries[j + 1] if j + 1 < len(boundaries) else len(all_lines)
+        segment = all_lines[start:end]
+        p = LogParser(log_path=log_path, lines=segment)
+        p.parse()
+        parsers.append(p)
+
+    return parsers

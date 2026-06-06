@@ -1,0 +1,86 @@
+[2026-05-06 19:54:11 INFO] **[Preprocessing]**
+
+**ChatOps Starts** (20260605195411)
+
+**Timestamp**: 20260605195411
+
+**Config Path**: /root/shared-nvme/work/code/RCA/2026/SoC-RCA/CompanyConfig/SelfIntroduction/ChatChainConfig.json
+
+**config Phase Path**: /root/shared-nvme/work/code/RCA/2026/SoC-RCA/CompanyConfig/SelfIntroduction/PhaseConfig.json
+
+**Config Role Path**: /root/shared-nvme/work/code/RCA/2026/SoC-RCA/CompanyConfig/SelfIntroduction/RoleConfig.json
+
+**Task Prompt**: At 2021/07/01 11:54 have exceptions in the microservices system. What are these exceptions? Please output an exception analysis.
+
+**Case Name**: test_enhanced_0701
+
+**Log File**: Report_enhanced_test/test_enhanced_0701_DefaultNameSpace_20260605195411.log
+
+**ChatOpsConfig**:
+ChatEnvConfig.clear_structure: True
+ChatEnvConfig.visual_report: True
+ChatEnvConfig.incremental_mode: False
+ChatEnvConfig.background_prompt: ChatOps is an AIOps company powered by multiple intelligent agents, such as AIOps copilot, metric analysis expert, fault diagnosis expert, etc, with a multi-agent organizational structure and the mission of enhancing operational efficiency and decision-making processes through seamless integration of human collaboration and automation technologies.
+
+
+**LLMConfig**:
+ChatGPTConfig(temperature=0.2, top_p=1.0, n=1, stream=False, stop=None, max_tokens=None, presence_penalty=0.0, frequency_penalty=0.0, logit_bias={}, user='')
+
+
+
+[2026-05-06 19:54:11 INFO] Flask app.py did not start for online log.
+[2026-05-06 19:54:11 INFO]   ChatChain pre_processing done, starting make_recruitment...
+[2026-05-06 19:54:11 INFO]   ChatChain make_recruitment done, starting execute_chain (model=deepseek-r1-0528)...
+[2026-05-06 19:54:11 INFO] System: **[chatting]**
+
+| Parameter | Value |
+| --- | --- |
+| **task_prompt** | At 2021/07/01 11:54 have exceptions in the microservices system. What are these exceptions? Please output an exception analysis. |
+| **need_reflect** | False |
+| **assistant_role_name** | Trade Analysis Expert |
+| **user_role_name** | AIOps Copilot |
+| **phase_prompt** | Knowledge:  Let's think step by step. Please output your observation of trade anomaly events in detail after , at least 6 sentences. The output format is:  Observation:...  Reasoning:...  Final Answer:... Note that you must ONLY talk about your observations,reasoning and suggestions and do not discuss anything else! |
+| **phase_name** | TradeAnalysis |
+| **assistant_role_prompt** | {chatops_prompt} You are a trade analysis expert and can gather trade anomaly info from your knowledge. Find the current trade anomaly events, tell the user about it, and give your suggestions. This is a query from the user: {task} To answer user inquiries, you need to deeply analyze trade data and write specific analysis results based on your expert knowledge and user needs, and provide the corresponding reasoning analysis process and final analysis results. |
+| **user_role_prompt** | {chatops_prompt} You are the leader of the operation and maintenance department of an Internet enterprise. Now, we are both working in the AIOps project. We have a common interest in successfully completing user inquiries and solving service faults and other problems reported by users. Your primary responsibilities include making key strategic high-level decisions, leading and managing operations teams, reviewing reports submitted by your employees, and ensuring operations activities are consistent with organizational goals. This is a query from the user: {task} In order to complete the task, I will give you one or more instructions. You need to assist me in answering the user's questions or giving appropriate solutions based on your expert knowledge and the user's needs. |
+| **chat_turn_limit** | 1 |
+| **placeholders** | {} |
+| **model_type** | ModelType.DEEPSEEK_R1_0528 |
+
+[2026-05-06 19:54:11 INFO] Flask app.py did not start for online log.
+[2026-05-06 19:54:11 INFO] System: **[RolePlaying]**
+
+| Parameter | Value |
+| --- | --- |
+| **assistant_role_name** | Trade Analysis Expert |
+| **user_role_name** | AIOps Copilot |
+| **assistant_role_prompt** | {chatops_prompt} You are a trade analysis expert and can gather trade anomaly info from your knowledge. Find the current trade anomaly events, tell the user about it, and give your suggestions. This is a query from the user: {task} To answer user inquiries, you need to deeply analyze trade data and write specific analysis results based on your expert knowledge and user needs, and provide the corresponding reasoning analysis process and final analysis results. |
+| **user_role_prompt** | {chatops_prompt} You are the leader of the operation and maintenance department of an Internet enterprise. Now, we are both working in the AIOps project. We have a common interest in successfully completing user inquiries and solving service faults and other problems reported by users. Your primary responsibilities include making key strategic high-level decisions, leading and managing operations teams, reviewing reports submitted by your employees, and ensuring operations activities are consistent with organizational goals. This is a query from the user: {task} In order to complete the task, I will give you one or more instructions. You need to assist me in answering the user's questions or giving appropriate solutions based on your expert knowledge and the user's needs. |
+| **task_prompt** | At 2021/07/01 11:54 have exceptions in the microservices system. What are these exceptions? Please output an exception analysis. |
+| **with_task_specify** | False |
+| **model_type** | ModelType.DEEPSEEK_R1_0528 |
+| **background_prompt** | ChatOps is an AIOps company powered by multiple intelligent agents, such as AIOps copilot, metric analysis expert, fault diagnosis expert, etc, with a multi-agent organizational structure and the mission of enhancing operational efficiency and decision-making processes through seamless integration of human collaboration and automation technologies. |
+
+[2026-05-06 19:54:11 INFO] Flask app.py did not start for online log.
+[2026-05-06 19:54:11 INFO] AIOps Copilot: **[Start Chat]**
+
+[ChatOps is an AIOps company powered by multiple intelligent agents, such as AIOps copilot, metric analysis expert, fault diagnosis expert, etc, with a multi-agent organizational structure and the mission of enhancing operational efficiency and decision-making processes through seamless integration of human collaboration and automation technologies.
+You are a trade analysis expert and can gather trade anomaly info from your knowledge. Find the current trade anomaly events, tell the user about it, and give your suggestions.
+This is a query from the user: At 2021/07/01 11:54 have exceptions in the microservices system. What are these exceptions? Please output an exception analysis.
+To answer user inquiries, you need to deeply analyze trade data and write specific analysis results based on your expert knowledge and user needs, and provide the corresponding reasoning analysis process and final analysis results.]
+
+Knowledge: 
+
+Let's think step by step. Please output your observation of trade anomaly events in detail after <INFO>, at least 6 sentences. The output format is:
+ Observation:...
+ Reasoning:...
+ Final Answer:...
+
+Note that you must ONLY talk about your observations,reasoning and suggestions and do not discuss anything else!
+
+[2026-05-06 19:54:11 INFO] Flask app.py did not start for online log.
+[2026-05-06 19:54:11 INFO] HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 400 Bad Request"
+[2026-05-06 19:54:16 INFO] HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 400 Bad Request"
+[2026-05-06 19:54:22 INFO] HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 400 Bad Request"
+[2026-05-06 19:54:27 INFO] HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 400 Bad Request"
+[2026-05-06 19:54:35 INFO] HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 400 Bad Request"

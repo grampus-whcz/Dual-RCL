@@ -222,41 +222,8 @@ def rouge_l_batch(
 # 4. Reasoning Quality: G-sim (LLM-as-Judge Similarity)
 # =====================================================================
 
-def gpt_similarity(
-    hypothesis: str,
-    reference: str,
-    model_name: str = "deepseek-r1-0528",
-    api_key: str | None = None,
-    base_url: str | None = None,
-) -> float:
-    """Compute G-sim: LLM-as-judge semantic similarity score (0-1).
-
-    As described in Paper [171], GPT-4 was used to evaluate the clarity
-    and coherence of the reasoning outputs. This implementation uses
-    the project's configured LLM API (default: DeepSeek).
-
-    The LLM is asked to rate the semantic similarity between the
-    hypothesis (generated reasoning) and reference (expert reasoning)
-    on a scale from 0 to 1.
-
-    Args:
-        hypothesis: Generated reasoning text.
-        reference: Reference reasoning text.
-        model_name: LLM model to use for judging.
-        api_key: API key (defaults to OPENAI_API_KEY env var).
-        base_url: API base URL (defaults to BASE_URL env var).
-
-    Returns:
-        Similarity score in [0, 1].
-    """
-    from openai import OpenAI
-
-    api_key = api_key or os.environ.get('OPENAI_API_KEY', '')
-    base_url = base_url or os.environ.get('BASE_URL', '')
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    prompt = f"""You are an expert evaluator for microservice failure localization reasoning.
+# Shared prompt template for G-sim evaluation
+_GSIM_PROMPT_TEMPLATE = """You are an expert evaluator for microservice failure localization reasoning.
 
 Compare the GENERATED reasoning with the REFERENCE reasoning and evaluate their semantic similarity on a scale from 0.0 to 1.0.
 
@@ -274,14 +241,58 @@ REFERENCE:
 
 Output ONLY a single float number between 0.0 and 1.0 representing the similarity score. Do not output anything else."""
 
+
+def gpt_similarity(
+    hypothesis: str,
+    reference: str,
+    model_name: str = "glm-4.7",
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> float:
+    """Compute G-sim: LLM-as-judge semantic similarity score (0-1).
+
+    As described in Paper [171], GPT-4 was used to evaluate the clarity
+    and coherence of the reasoning outputs. This implementation uses the
+    unified LLM client, supporting any configured model (default: glm-4.7).
+
+    The LLM is asked to rate the semantic similarity between the
+    hypothesis (generated reasoning) and reference (expert reasoning)
+    on a scale from 0 to 1.
+
+    Args:
+        hypothesis: Generated reasoning text.
+        reference: Reference reasoning text.
+        model_name: LLM model to use for judging.
+        api_key: API key (auto-detected from defaults if None).
+        base_url: API base URL (auto-detected from defaults if None).
+
+    Returns:
+        Similarity score in [0, 1].
+    """
+    from evaluation.llm_client import create_client
+
+    kwargs = {}
+    if api_key:
+        kwargs['api_key'] = api_key
+    if base_url:
+        kwargs['base_url'] = base_url
+
+    client = create_client(model_name, **kwargs)
+
+    prompt = _GSIM_PROMPT_TEMPLATE.format(
+        hypothesis=hypothesis, reference=reference
+    )
+
     try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
+        score_text = client.call(
+            system_prompt="You are an expert evaluator. Output only a number.",
+            user_prompt=prompt,
             temperature=0.0,
-            max_tokens=10,
+            max_tokens=50,
         )
-        score_text = response.choices[0].message.content.strip()
+        if score_text is None:
+            return 0.0
+
         # Extract the first float from the response
         match = re.search(r'[0-9]*\.?[0-9]+', score_text)
         if match:
@@ -296,7 +307,7 @@ Output ONLY a single float number between 0.0 and 1.0 representing the similarit
 def gpt_similarity_batch(
     hypotheses: List[str],
     references: List[str],
-    model_name: str = "deepseek-r1-0528",
+    model_name: str = "glm-4.7",
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> float:
@@ -306,6 +317,80 @@ def gpt_similarity_batch(
         s = gpt_similarity(h, r, model_name, api_key, base_url)
         scores.append(s)
     return float(np.mean(scores))
+
+
+def gpt_similarity_multi_judge(
+    hypothesis: str,
+    reference: str,
+    judge_models: List[str] = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Compute G-sim using multiple LLM judges and return per-judge scores.
+
+    Each judge independently scores the similarity. This provides a more
+    robust evaluation, similar to having multiple human annotators.
+
+    Args:
+        hypothesis: Generated reasoning text.
+        reference: Reference reasoning text.
+        judge_models: List of model names to use as judges.
+        api_key: API key (auto-detected if None).
+        base_url: API base URL (auto-detected if None).
+
+    Returns:
+        dict with:
+          - 'scores': {model_name: score}
+          - 'mean': average score across judges
+    """
+    if judge_models is None:
+        judge_models = ["glm-4.7"]
+
+    scores = {}
+    for model in judge_models:
+        score = gpt_similarity(hypothesis, reference, model, api_key, base_url)
+        scores[model] = score
+
+    mean_score = float(np.mean(list(scores.values()))) if scores else 0.0
+    return {'scores': scores, 'mean': mean_score}
+
+
+def gpt_similarity_multi_judge_batch(
+    hypotheses: List[str],
+    references: List[str],
+    judge_models: List[str] = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Average multi-judge G-sim over a batch.
+
+    Returns:
+        dict with:
+          - 'per_model_mean': {model_name: mean_score}
+          - 'overall_mean': average across all judges and cases
+    """
+    if judge_models is None:
+        judge_models = ["glm-4.7"]
+
+    per_model_scores = {m: [] for m in judge_models}
+
+    for h, r in zip(hypotheses, references):
+        result = gpt_similarity_multi_judge(h, r, judge_models, api_key, base_url)
+        for model, score in result['scores'].items():
+            per_model_scores[model].append(score)
+
+    per_model_mean = {
+        m: float(np.mean(scores)) if scores else 0.0
+        for m, scores in per_model_scores.items()
+    }
+
+    all_scores = [s for scores in per_model_scores.values() for s in scores]
+    overall_mean = float(np.mean(all_scores)) if all_scores else 0.0
+
+    return {
+        'per_model_mean': per_model_mean,
+        'overall_mean': overall_mean,
+    }
 
 
 # =====================================================================
