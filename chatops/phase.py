@@ -312,12 +312,15 @@ class Phase(ABC):
 
         # --- [EVAL] Emit structured agent output for evaluation ---
         import json as _json
+        import logging as _logging
         _eval_record = {
             "type": "agent_output",
             "agent": self.phase_name,
             "text": str(self.seminar_conclusion)[:2000],
         }
-        print(f"[EVAL] {_json.dumps(_eval_record, ensure_ascii=False)}")
+        _eval_msg = f"[EVAL] {_json.dumps(_eval_record, ensure_ascii=False)}"
+        print(_eval_msg)
+        _logging.info(_eval_msg)
 
         return chat_env
 

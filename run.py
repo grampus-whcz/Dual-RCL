@@ -69,8 +69,14 @@ def _eval_log(record: dict):
     structured metric data.  The evaluation.log_parser module extracts
     these lines to compute Paper [171] metrics (A@k, BLEU-4, ROUGE-L,
     G-sim, latency).
+
+    Uses BOTH print() (→ stdout / nohup log) and logging.info()
+    (→ per-case .log file after logging.basicConfig is called) so that
+    ``--log-dir`` mode can find the records in the per-case log files.
     """
-    print(f"[EVAL] {_json.dumps(record, ensure_ascii=False)}")
+    msg = f"[EVAL] {_json.dumps(record, ensure_ascii=False)}"
+    print(msg)
+    logging.info(msg)
 
 
 def _phase_banner(phase: str, title: str):
@@ -486,6 +492,25 @@ def get_args() -> argparse.Namespace:
 def main(args: argparse.Namespace):
     # Start ChatOps
 
+    # ---- Set up per-case log file BEFORE any phases run ----
+    # This ensures ALL [EVAL] records (from _eval_log using logging.info)
+    # are written to the per-case .log file, not just to stdout.
+    from chatops.utils import now as _now
+    _start_time = _now()
+    _case_name_full = '_'.join([args.name, args.namespace, _start_time])
+    _report_dir = pathlib.Path(args.report_dir) if args.report_dir else pathlib.Path('Report')
+    _report_dir.mkdir(exist_ok=True, parents=True)
+    _log_path = _report_dir / f'{_case_name_full}.log'
+
+    logging.basicConfig(
+        filename=_log_path,
+        level=logging.INFO,
+        format='[%(asctime)s %(levelname)s] %(message)s',
+        datefmt='%Y-%d-%m %H:%M:%S',
+        encoding='utf-8',
+    )
+    logger.info(f"  Per-case log file: {_log_path}")
+
     # ---- Ollama local model support ----
     # When the user selects an ollama-* model, override BASE_URL to point
     # to the local Ollama server.  Ollama exposes an OpenAI-compatible API
@@ -606,7 +631,8 @@ def main(args: argparse.Namespace):
 
         # Skip to ChatChain initialization
         _run_chatchain(args, config_path, config_phase_path, config_role_path,
-                       phase_t0=None, report_dir=args.report_dir)
+                       phase_t0=None, report_dir=args.report_dir,
+                       log_path=_log_path, start_time=_start_time)
         return
 
     # =================================================================
@@ -1091,7 +1117,8 @@ def main(args: argparse.Namespace):
     t0_p9 = _phase_banner("Phase 9", "ChatChain LLM Multi-Agent Reasoning")
 
     _run_chatchain(args, config_path, config_phase_path, config_role_path,
-                   phase_t0=t0_p9, report_dir=args.report_dir)
+                   phase_t0=t0_p9, report_dir=args.report_dir,
+                   log_path=_log_path, start_time=_start_time)
 
     # --- Evaluation: end-to-end latency ---
     total_elapsed = time.time() - t0_p1
@@ -1113,6 +1140,8 @@ def _run_chatchain(
     config_role_path: pathlib.Path,
     phase_t0: float = None,
     report_dir: str = None,
+    log_path: pathlib.Path = None,
+    start_time: str = None,
 ):
     """Initialise and execute the ChatChain LLM multi-agent pipeline.
 
@@ -1123,6 +1152,8 @@ def _run_chatchain(
         phase_t0: optional start-time from the calling Phase banner,
                   used to report total elapsed time on completion.
         report_dir: output directory for reports and logs (default: Report/).
+        log_path: pre-computed per-case log file path (avoids re-creating).
+        start_time: pre-computed start_time string matching log_path.
     """
     args2type = {
         'GPT_3_5_TURBO': ModelType.GPT_3_5_TURBO,
@@ -1152,13 +1183,16 @@ def _run_chatchain(
         report_dir=report_dir,
     )
 
-    logging.basicConfig(
-        filename=chat_chain.log_path,
-        level=logging.INFO,
-        format='[%(asctime)s %(levelname)s] %(message)s',
-        datefmt='%Y-%d-%m %H:%M:%S',
-        encoding='utf-8',
-    )
+    # Override log_path / start_time with the pre-computed values so that
+    # ChatChain writes to the SAME file that logging.basicConfig() already
+    # targets (set up at the top of main()).
+    if log_path is not None:
+        chat_chain.log_path = pathlib.Path(log_path)
+    if start_time is not None:
+        chat_chain.start_time = start_time
+
+    # logging.basicConfig() already called at the top of main() — do NOT
+    # call it again here (it only takes effect once).
 
     chat_chain.pre_processing()
     logger.info("  ChatChain pre_processing done, starting make_recruitment...")

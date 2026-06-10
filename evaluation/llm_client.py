@@ -106,7 +106,7 @@ class LLMClient:
         )
 
         content = response.choices[0].message.content
-        if content is None:
+        if content is None or not content.strip():
             raise ValueError("LLM returned empty content")
 
         # Log token usage
@@ -144,7 +144,7 @@ class LLMClient:
         )
 
         content = response.choices[0].message.content
-        if content is None:
+        if content is None or not content.strip():
             raise ValueError("LLM returned empty content")
         return content.strip()
 
@@ -278,14 +278,17 @@ def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
     Handles cases where the LLM wraps JSON in markdown code blocks,
     includes extra text before/after, or truncates the response.
     """
+    if not text or not text.strip():
+        return None
+
     # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try extracting from markdown code block
-    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    # Try extracting from markdown code block (case-insensitive)
+    m = re.search(r'```(?:json|JSON|Json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1).strip())
@@ -308,25 +311,94 @@ def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
                 except json.JSONDecodeError:
                     start = None
 
-    # Last resort: try to fix truncated JSON by closing open braces/brackets/quotes
+    # Last resort: try to fix truncated JSON
     if start is not None:
         snippet = text[start:]
-        # Count unclosed braces
-        open_braces = snippet.count('{') - snippet.count('}')
-        open_brackets = snippet.count('[') - snippet.count(']')
-        # Fix truncated string values: remove trailing partial string
-        fixed = snippet.rstrip()
-        if fixed.endswith('"') or (not fixed.endswith('"') and fixed.count('"') % 2 == 1):
-            # Odd number of quotes — truncate to last complete key-value pair
-            last_comma = fixed.rfind('",')
-            if last_comma > 0:
-                fixed = fixed[:last_comma+1]
-        # Close open structures
-        fixed += ']' * max(0, open_brackets) + '}' * max(0, open_braces)
-        try:
-            return json.loads(fixed)
-        except json.JSONDecodeError:
-            pass
+
+        # Strategy: remove the last incomplete key-value pair, then close braces
+        fixed = _repair_truncated_json(snippet)
+        if fixed is not None:
+            return fixed
 
     logger.warning(f"[LLMClient] Could not parse JSON from: {text[:200]}")
+    return None
+
+
+def _repair_truncated_json(snippet: str) -> Optional[Dict[str, Any]]:
+    """Attempt multiple repair strategies on truncated JSON.
+
+    Handles:
+      - Incomplete last value: {"vote": "X", "ranking":}
+      - Truncated array: {"ranking": ["a", "b
+      - Missing closing braces/brackets
+    """
+    # Count unclosed structures
+    open_braces = snippet.count('{') - snippet.count('}')
+    open_brackets = snippet.count('[') - snippet.count(']')
+    rstripped = snippet.rstrip()
+
+    # --- Strategy 1: truncate to last complete key-value pair ---
+    # Find the last complete value followed by a comma or end-of-object
+    # Walk backwards to find the last valid JSON boundary
+    attempts = []
+
+    # Remove trailing incomplete content after last comma at depth 1
+    # e.g. {"a": 1, "b":}  →  {"a": 1}
+    # e.g. {"vote": "X", "ranking":}  →  {"vote": "X"}
+    last_comma = rstripped.rfind(',')
+    if last_comma > 0:
+        # Try everything up to and including the last comma (as a complete object)
+        # by removing the trailing comma and closing braces
+        prefix = rstripped[:last_comma].rstrip()
+        if prefix.endswith(','):
+            prefix = prefix[:-1].rstrip()
+        for suffix in ['}', ']}', '}']:
+            try:
+                # Recount braces in prefix
+                p_braces = prefix.count('{') - prefix.count('}')
+                p_brackets = prefix.count('[') - prefix.count(']')
+                candidate = prefix + ']' * max(0, p_brackets) + '}' * max(0, p_braces)
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+    # --- Strategy 2: close all open strings, brackets, braces ---
+    # Check for unclosed string
+    fixed = rstripped
+    quote_count = fixed.count('"')
+    if quote_count % 2 == 1:
+        # Odd quotes — close the string
+        fixed += '"'
+    # If inside an array value, close it
+    if open_brackets > 0:
+        fixed += ']' * open_brackets
+    if open_braces > 0:
+        fixed += '}' * open_braces
+    try:
+        return json.loads(fixed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # --- Strategy 3: aggressive — extract only completed string values ---
+    # Find all "key": "value" pairs using regex
+    pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', snippet)
+    if pairs:
+        reconstructed = {k: v for k, v in pairs}
+        return reconstructed
+
+    # --- Strategy 4: extract boolean/null/number values ---
+    pairs2 = re.findall(r'"(\w+)"\s*:\s*(true|false|null|\d+\.?\d*)', snippet)
+    if pairs2:
+        result = {}
+        for k, v in pairs2:
+            if v == 'true':
+                result[k] = True
+            elif v == 'false':
+                result[k] = False
+            elif v == 'null':
+                result[k] = None
+            else:
+                result[k] = float(v) if '.' in v else int(v)
+        return result
+
     return None

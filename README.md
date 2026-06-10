@@ -386,3 +386,116 @@ Top5 root cause services:{服务排名}
 | `run.py` Phase 4A | 修改调用 | 调用 `enhance_metric_describe()` 替代原 `generate_metric_describe()` |
 | `run.py` 新增函数 | 新增 | `generate_multivariate_knowledge()`、`generate_causal_knowledge()`、`generate_concordance_report()` |
 | `run.py` Phase 7 | 修改注入 | 增强 MetricAnalysis 和 RootCauseAnalysis 的 prompt 内容 |
+
+---
+
+### 评估（Evaluation）
+
+评估模块实现论文 [171] 的 Tables II–VI 全部指标。所有命令需在项目根目录下执行：
+
+```bash
+cd /root/shared-nvme/work/code/RCA/2026/SoC-RCA
+```
+
+#### 指标说明
+
+| 指标 | 对应论文表格 | 含义 | 是否需要 LLM 调用 |
+|------|-------------|------|-------------------|
+| A@1, A@3, A@5 | Table II | Top-k 根因定位准确率 | 否 |
+| BLEU-4 | Tables III–V | 4-gram 精度（推理文本质量） | 否（需参考文本） |
+| ROUGE-L | Tables III–V | 最长公共子序列 F1（推理文本质量） | 否（需参考文本） |
+| G-sim | Tables III–V | LLM-as-Judge 语义相似度 | 是 |
+| W-rate | Tables III–V | LLM 投票胜率（多方法对比） | 是 |
+| Latency | Table VI | 端到端延迟 | 否 |
+
+#### ① 基本指标（A@k + 延迟）—— 秒级完成
+
+```bash
+# DualChannel
+python -m evaluation.run_evaluation \
+    --log experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/
+
+# LocaleXpert
+python -m evaluation.run_evaluation \
+    --log experiments_localexpert.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/
+```
+
+#### ② 加 BLEU-4 / ROUGE-L（使用已有参考文本）—— 秒级完成
+
+```bash
+# DualChannel（参考文本已预生成）
+python -m evaluation.run_evaluation \
+    --log experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --ref-input evaluation/reference_texts_dualchannel
+
+# LocaleXpert（首次需生成参考文本，耗时约 60-90 分钟）
+python -m evaluation.run_evaluation \
+    --log experiments_localexpert.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --generate-references \
+    --ref-model glm-4.7 \
+    --ref-output evaluation/reference_texts_localexpert
+
+# LocaleXpert（参考文本已生成后）
+python -m evaluation.run_evaluation \
+    --log experiments_localexpert.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --ref-input evaluation/reference_texts_localexpert
+```
+
+#### ③ 完整评估（BLEU-4 / ROUGE-L / G-sim / W-rate）—— 需要 LLM 调用，耗时较长
+
+```bash
+# DualChannel 完整评估
+python -m evaluation.run_evaluation \
+    --log experiments_dualchannel.log \
+    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
+    --ref-input evaluation/reference_texts_dualchannel \
+    --gsim --gsim-model glm-4.7 \
+    --compute-wrate \
+    --methods-log "DualChannel=experiments_dualchannel.log" \
+                  "LocaleXpert=experiments_localexpert.log" \
+    --voter-model glm-4.7 \
+    --model-name glm-4.7
+```
+
+#### ④ 一键脚本（实验 + 自动评估）
+
+```bash
+# DualChannel：运行实验后自动生成参考文本 + G-sim + W-rate
+nohup bash experiments_dualchannel.sh > experiments_dualchannel.log 2>&1 &
+
+# LocaleXpert：运行实验后自动生成参考文本 + G-sim + W-rate
+nohup bash experiments_localexpert.sh > experiments_localexpert.log 2>&1 &
+```
+
+#### ⑤ 监控评估进度
+
+```bash
+# 查看后台评估日志
+tail -f evaluation_full_dualchannel.log
+
+# 查看已生成的参考文本
+ls -la evaluation/reference_texts_dualchannel/
+```
+
+#### 评估参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--log` | (必需，与 `--log-dir` 二选一) | 单个实验日志文件路径（nohup 输出） |
+| `--log-dir` | (必需，与 `--log` 二选一) | 包含多个日志文件的目录 |
+| `--gt-pkl-dir` | `Datasets/GAIA/fault_injection_tracerank` | Ground truth pkl 文件目录 |
+| `--generate-references` | `False` | 用 LLM 生成专家参考文本（首次需要） |
+| `--ref-model` | `glm-4.7` | 生成参考文本的 LLM 模型 |
+| `--ref-output` | `evaluation/reference_texts` | 参考文本输出目录 |
+| `--ref-input` | `None` | 加载已有的参考文本（跳过生成） |
+| `--gsim` | `False` | 计算 G-sim（LLM-as-Judge 语义相似度） |
+| `--gsim-model` | `glm-4.7` | G-sim 评判模型 |
+| `--compute-wrate` | `False` | 计算 W-rate（LLM 投票胜率） |
+| `--methods-log` | `None` | 各方法日志路径，格式：`名称=路径` |
+| `--voter-model` | `glm-4.7` | LLM 投票模型 |
+| `--model-name` | `glm-4.7` | 实验使用的 LLM 名称 |

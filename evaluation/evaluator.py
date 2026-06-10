@@ -520,40 +520,58 @@ class Evaluator:
                 'log_expert': 'LogExpert',
             }[expert_name]
 
-            hypotheses = [getattr(c, output_key) for c in cases]
-            hypotheses = [h for h in hypotheses if h]
-
-            # Determine reference text for this expert
-            refs_for_expert: List[str] = []
+            # Build paired (hypothesis, reference) lists — only keep cases
+            # where BOTH the agent output and the reference exist.
+            paired_hypotheses: List[str] = []
+            paired_refs: List[str] = []
 
             if ref_texts:
-                # Per-case references
+                # Per-case references — align by case_id
                 for c in cases:
+                    text = getattr(c, output_key, '')
+                    if not text:
+                        continue
                     cid = f"{c.date}_{c.time}"
-                    if cid in ref_texts and ref_key in ref_texts[cid]:
-                        refs_for_expert.append(ref_texts[cid][ref_key])
+                    case_refs = ref_texts.get(cid, {})
+                    if ref_key in case_refs and case_refs[ref_key]:
+                        paired_hypotheses.append(text)
+                        paired_refs.append(case_refs[ref_key])
             elif self.reference_texts and ref_key in self.reference_texts:
                 # Single reference text for all cases
-                refs_for_expert = [self.reference_texts[ref_key]] * len(hypotheses)
+                for c in cases:
+                    text = getattr(c, output_key, '')
+                    if text:
+                        paired_hypotheses.append(text)
+                        paired_refs.append(self.reference_texts[ref_key])
 
-            if hypotheses and refs_for_expert and len(hypotheses) == len(refs_for_expert):
+            if paired_hypotheses and paired_refs:
+                n_pairs = len(paired_hypotheses)
+                print(f"  [{expert_name}] Computing BLEU-4/ROUGE-L on "
+                      f"{n_pairs} pairs...", flush=True)
                 expert_report = {
-                    'BLEU-4': bleu4_batch(hypotheses, refs_for_expert),
-                    'ROUGE-L': rouge_l_batch(hypotheses, refs_for_expert),
+                    'BLEU-4': bleu4_batch(paired_hypotheses, paired_refs),
+                    'ROUGE-L': rouge_l_batch(paired_hypotheses, paired_refs),
                 }
                 if compute_gsim:
+                    print(f"  [{expert_name}] Computing G-sim on "
+                          f"{n_pairs} pairs (model={gsim_model})...", flush=True)
                     if gsim_judges and len(gsim_judges) > 1:
                         multi_result = gpt_similarity_multi_judge_batch(
-                            hypotheses, refs_for_expert,
+                            paired_hypotheses, paired_refs,
                             judge_models=gsim_judges,
+                            label=expert_name,
                         )
                         expert_report['G-sim'] = multi_result['overall_mean']
                         for m, s in multi_result['per_model_mean'].items():
                             expert_report[f'G-sim({m})'] = s
                     else:
                         expert_report['G-sim'] = gpt_similarity_batch(
-                            hypotheses, refs_for_expert, model_name=gsim_model
+                            paired_hypotheses, paired_refs,
+                            model_name=gsim_model,
+                            label=expert_name,
                         )
+                    print(f"  [{expert_name}] G-sim done: "
+                          f"{expert_report['G-sim']:.4f}", flush=True)
                 setattr(report, expert_name, expert_report)
 
         # W-rate via LLM voting

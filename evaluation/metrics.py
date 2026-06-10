@@ -239,7 +239,19 @@ GENERATED:
 REFERENCE:
 {reference}
 
-Output ONLY a single float number between 0.0 and 1.0 representing the similarity score. Do not output anything else."""
+Evaluate and output a JSON object with the following format:
+```json
+{{
+    "score": 0.85,
+    "reasoning": "Brief explanation of the similarity rating"
+}}
+```
+
+The score must be a float between 0.0 and 1.0."""
+
+
+# Maximum text length for G-sim comparison (chars per text)
+_GSIM_MAX_TEXT_LEN = 3000
 
 
 def gpt_similarity(
@@ -279,25 +291,45 @@ def gpt_similarity(
 
     client = create_client(model_name, **kwargs)
 
+    # Truncate very long texts to avoid token limit issues
+    hyp_trunc = hypothesis[:_GSIM_MAX_TEXT_LEN] + (
+        '...' if len(hypothesis) > _GSIM_MAX_TEXT_LEN else ''
+    )
+    ref_trunc = reference[:_GSIM_MAX_TEXT_LEN] + (
+        '...' if len(reference) > _GSIM_MAX_TEXT_LEN else ''
+    )
+
     prompt = _GSIM_PROMPT_TEMPLATE.format(
-        hypothesis=hypothesis, reference=reference
+        hypothesis=hyp_trunc, reference=ref_trunc
     )
 
     try:
-        score_text = client.call(
+        # Primary: use call_json() for structured output
+        # NOTE: max_tokens must be large enough for reasoning models (e.g. glm-4.5)
+        # which consume tokens for internal chain-of-thought before producing output.
+        result = client.call_json(
+            system_prompt="You are an expert evaluator. Output valid JSON only.",
+            user_prompt=prompt,
+            temperature=0.1,
+            max_tokens=4096,
+        )
+        if result and 'score' in result:
+            score = float(result['score'])
+            return min(1.0, max(0.0, score))
+
+        # Fallback: if JSON parse failed but we got text, extract number
+        raw_text = client.call(
             system_prompt="You are an expert evaluator. Output only a number.",
             user_prompt=prompt,
-            temperature=0.0,
-            max_tokens=50,
+            temperature=0.1,
+            max_tokens=2048,
         )
-        if score_text is None:
-            return 0.0
+        if raw_text:
+            match = re.search(r'[0-9]*\.?[0-9]+', raw_text)
+            if match:
+                score = float(match.group())
+                return min(1.0, max(0.0, score))
 
-        # Extract the first float from the response
-        match = re.search(r'[0-9]*\.?[0-9]+', score_text)
-        if match:
-            score = float(match.group())
-            return min(1.0, max(0.0, score))
         return 0.0
     except Exception as e:
         print(f"[G-sim] Error calling LLM: {e}")
@@ -310,13 +342,19 @@ def gpt_similarity_batch(
     model_name: str = "glm-4.7",
     api_key: str | None = None,
     base_url: str | None = None,
+    label: str = "",
 ) -> float:
     """Average G-sim over a batch."""
+    total = len(hypotheses)
     scores = []
-    for h, r in zip(hypotheses, references):
+    for i, (h, r) in enumerate(zip(hypotheses, references)):
         s = gpt_similarity(h, r, model_name, api_key, base_url)
         scores.append(s)
-    return float(np.mean(scores))
+        avg_so_far = float(np.mean(scores))
+        prefix = f"[{label}] " if label else ""
+        print(f"  {prefix}G-sim: {i+1}/{total} done "
+              f"(last={s:.3f}, running_avg={avg_so_far:.3f})", flush=True)
+    return float(np.mean(scores)) if scores else 0.0
 
 
 def gpt_similarity_multi_judge(
@@ -361,6 +399,7 @@ def gpt_similarity_multi_judge_batch(
     judge_models: List[str] = None,
     api_key: str | None = None,
     base_url: str | None = None,
+    label: str = "",
 ) -> dict:
     """Average multi-judge G-sim over a batch.
 
@@ -372,12 +411,22 @@ def gpt_similarity_multi_judge_batch(
     if judge_models is None:
         judge_models = ["glm-4.7"]
 
+    total = len(hypotheses)
+    prefix = f"[{label}] " if label else ""
     per_model_scores = {m: [] for m in judge_models}
 
-    for h, r in zip(hypotheses, references):
+    for i, (h, r) in enumerate(zip(hypotheses, references)):
         result = gpt_similarity_multi_judge(h, r, judge_models, api_key, base_url)
         for model, score in result['scores'].items():
             per_model_scores[model].append(score)
+
+        all_so_far = [s for scores in per_model_scores.values() for s in scores]
+        avg_so_far = float(np.mean(all_so_far)) if all_so_far else 0.0
+        judge_scores_str = ", ".join(
+            f"{m}={per_model_scores[m][-1]:.3f}" for m in judge_models
+        )
+        print(f"  {prefix}G-sim[multi]: {i+1}/{total} done "
+              f"({judge_scores_str}, running_avg={avg_so_far:.3f})", flush=True)
 
     per_model_mean = {
         m: float(np.mean(scores)) if scores else 0.0

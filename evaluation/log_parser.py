@@ -46,6 +46,11 @@ CONFLICT_RE = re.compile(r'Conflict scenario:\s*(\w+)')
 # Regex to match task parsed date/time
 TASK_PARSED_RE = re.compile(r'Task parsed:\s*date=(\d+),\s*time=([\d-]+)')
 
+# Regex to match task prompt (fallback for date/time extraction)
+TASK_PROMPT_RE = re.compile(
+    r'At\s+(\d{4})/(\d{2})/(\d{2})\s+(\d{2}):(\d{2})\s+have exceptions'
+)
+
 # Regex to match trace anomalies count
 TRACE_ANOMALY_RE = re.compile(r'Trace anomalies found:\s*(\d+)')
 
@@ -104,13 +109,43 @@ class LogParser:
     # -----------------------------------------------------------------
 
     def _extract_eval_records(self):
-        """Extract structured [EVAL] JSON records."""
+        """Extract structured [EVAL] JSON records.
+
+        Also populates metadata fields from the records as fallbacks for
+        regex-based extraction (e.g. when per-case log files don't contain
+        the standard log lines).
+        """
         for line in self.raw_lines:
             m = EVAL_LINE_RE.search(line.strip())
             if m:
                 try:
                     record = json.loads(m.group(1))
                     self.eval_records.append(record)
+
+                    # --- Populate metadata from [EVAL] records as fallback ---
+
+                    # task_parsed → date, time
+                    if record.get('type') == 'task_parsed':
+                        if 'date' not in self.metadata:
+                            self.metadata['date'] = record.get('date', '')
+                        if 'time' not in self.metadata:
+                            self.metadata['time'] = record.get('time', '')
+
+                    # localization → root_services (predictions)
+                    if record.get('type') == 'localization':
+                        preds = record.get('predictions', [])
+                        if preds and 'root_services' not in self.metadata:
+                            self.metadata['root_services'] = preds
+
+                    # e2e_latency → conflict_scenario, anomaly_method, model
+                    if record.get('type') == 'e2e_latency':
+                        if 'conflict_scenario' not in self.metadata:
+                            self.metadata['anomaly_method'] = record.get(
+                                'anomaly_method', '')
+                            self.metadata['rca_method'] = record.get(
+                                'rca_method', '')
+                            self.metadata['model'] = record.get('model', '')
+
                 except json.JSONDecodeError:
                     continue
 
@@ -145,11 +180,19 @@ class LogParser:
         for line in self.raw_lines:
             line = line.strip()
 
-            # Task date/time
+            # Task date/time from standard log line
             m = TASK_PARSED_RE.search(line)
             if m:
                 self.metadata['date'] = m.group(1)
                 self.metadata['time'] = m.group(2)
+
+            # Fallback: extract date/time from task prompt line
+            # e.g. "**Task Prompt**: At 2021/07/01 11:16 have exceptions..."
+            if 'date' not in self.metadata:
+                m = TASK_PROMPT_RE.search(line)
+                if m:
+                    self.metadata['date'] = m.group(2) + m.group(3)  # MMDD
+                    self.metadata['time'] = f"{m.group(4)}-{m.group(5)}"  # HH-MM
 
             # MEPFL top-5 root services
             m = MEPFL_RE.search(line)

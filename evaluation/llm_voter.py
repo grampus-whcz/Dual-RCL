@@ -146,6 +146,84 @@ Output a JSON object:
 
 
 # =====================================================================
+# Helpers
+# =====================================================================
+
+def _extract_vote_from_text(
+    text: str,
+    valid_methods: List[str],
+) -> Optional[dict]:
+    """Try to extract a vote from raw LLM text when JSON parsing fails.
+
+    Looks for method names mentioned in the text and returns the first
+    one found as the vote.
+
+    Args:
+        text: Raw LLM response text.
+        valid_methods: List of valid method names to look for.
+
+    Returns:
+        dict with 'vote', 'ranking', 'reasoning' or None.
+    """
+    import re as _re
+
+    if not text or not text.strip():
+        return None
+
+    # Look for explicit "vote": "Method" patterns (even in broken JSON)
+    vote_match = _re.search(
+        r'"vote"\s*:\s*"([^"]+)"', text, _re.IGNORECASE
+    )
+    if vote_match:
+        voted = vote_match.group(1)
+        # Find the closest valid method name
+        for m in valid_methods:
+            if m.lower() == voted.lower().strip():
+                return {
+                    'vote': m,
+                    'ranking': [m] + [x for x in valid_methods if x != m],
+                    'reasoning': 'Extracted from partial response.',
+                }
+
+    # Look for method name mentioned as the best/preferred/winner
+    for m in valid_methods:
+        patterns = [
+            rf'\bvotes?\s+(?:for\s+)?["\']?{ _re.escape(m)}["\']?',
+            rf'\bbest\s+(?:method\s+)?(?:is\s+)?["\']?{_re.escape(m)}["\']?',
+            rf'\bprefer\s+["\']?{_re.escape(m)}["\']?',
+            rf'\bselect\s+(?:method\s+)?["\']?{_re.escape(m)}["\']?',
+            rf'\bchoose\s+["\']?{_re.escape(m)}["\']?',
+            rf'\bwinner\s*(?:is\s+)?["\']?{_re.escape(m)}["\']?',
+        ]
+        for pat in patterns:
+            if _re.search(pat, text, _re.IGNORECASE):
+                return {
+                    'vote': m,
+                    'ranking': [m] + [x for x in valid_methods if x != m],
+                    'reasoning': 'Extracted from text pattern.',
+                }
+
+    # Last resort: find first valid method name mentioned in the text
+    # that appears in a "voting" context (after "vote", "best", "choose")
+    text_lower = text.lower()
+    first_mentions = []
+    for m in valid_methods:
+        idx = text_lower.find(m.lower())
+        if idx >= 0:
+            first_mentions.append((idx, m))
+    if first_mentions:
+        first_mentions.sort()
+        best = first_mentions[0][1]
+        return {
+            'vote': best,
+            'ranking': [best] + [x for x in valid_methods if x != best],
+            'reasoning': 'Extracted as first-mentioned method.',
+        }
+
+    return None
+
+
+# =====================================================================
 # LLM Voter
 # =====================================================================
 
@@ -201,6 +279,18 @@ class LLMVoter:
         )
 
         if result is None:
+            # Fallback: try to extract vote from raw text
+            raw_text = self.client.call(
+                VOTER_SYSTEM_PROMPT, prompt,
+                temperature=temperature,
+            )
+            if raw_text:
+                extracted = _extract_vote_from_text(raw_text, list(methods_output.keys()))
+                if extracted:
+                    logger.info(f"[LLMVoter] Recovered vote from raw text: "
+                                f"{extracted['vote']}")
+                    return extracted
+
             logger.warning("[LLMVoter] Voter returned unparseable response; "
                            "defaulting to first method.")
             return {
