@@ -92,7 +92,7 @@ class MLPWithSoftmax(nn.Module):
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size, output_size)
-        self.softmax = nn.Softmax(dim=1)  
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -100,26 +100,81 @@ class MLPWithSoftmax(nn.Module):
         x = self.fc2(x)
         x = self.softmax(x)
         return x
-    
-def mepfl_22(path):
-    
-    
+
+
+class MLPWithSoftmaxV2(nn.Module):
+    """3-layer MLP used by GPU-trained models (train_mepfl_aiops22.py)."""
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(hidden_size // 2, output_size)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x):
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.relu2(self.fc2(x))
+        x = self.softmax(self.fc3(x))
+        return x
+
+
+_mepfl_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def _load_mlp_model(model_dir='./mepfl_model_aiops22'):
+    """Load MLP model, supporting both sklearn (.pkl) and PyTorch (.pt) formats."""
+    meta_path = os.path.join(model_dir, 'meta.json')
+    pt_path = os.path.join(model_dir, 'mlp_model.pt')
+    pkl_path = os.path.join(model_dir, 'mlp_model.pkl')
+
+    # Prefer PyTorch model if meta.json exists
+    if os.path.exists(meta_path) and os.path.exists(pt_path):
+        import json
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        hidden = meta.get('hidden_size', 256)
+        model = MLPWithSoftmaxV2(meta['input_size'], hidden, meta['output_size'])
+        model.load_state_dict(torch.load(pt_path, map_location=_mepfl_device, weights_only=True))
+        model.to(_mepfl_device)
+        model.eval()
+        logger.info(f'  Loaded PyTorch MLP from {pt_path} (device={_mepfl_device})')
+        # Store reverse_label_map for converting predicted indices back to service indices
+        reverse_map = meta.get('reverse_label_map', {})
+        return (model, reverse_map), 'pytorch'
+
+    # Fall back to sklearn
+    if os.path.exists(pkl_path):
+        mlp = pickle.load(open(pkl_path, 'rb'))
+        logger.info(f'  Loaded sklearn MLP from {pkl_path}')
+        return mlp, 'sklearn'
+
+    raise FileNotFoundError(f'No MLP model found in {model_dir}/')
+
+
+def mepfl_22(path, model_dir='./mepfl_model_aiops22'):
+
+
     logger.info('Loading models')
     rf_model = pickle.load(
-        open('./mepfl_model_aiops22/rf_model.pkl', 'rb')
+        open(os.path.join(model_dir, 'rf_model.pkl'), 'rb')
     )
-    mlp_model = pickle.load(
-        open('./mepfl_model_aiops22/mlp_model.pkl', 'rb')
-    )
+    mlp_model, mlp_type = _load_mlp_model(model_dir)
 
     total_fault_count = 0
     fault_injection_list = pickle.load(
         open(path, 'rb')
     )
     logger.info(f'length: {len(fault_injection_list)}')
-    
+
     pred_index_list = []
     total_fault_count += len(fault_injection_list)
+
+    # Default ranking (full service list) in case all fault injections are skipped
+    sorted_service_list = list(total_service_list)
 
     for fault_injection in fault_injection_list:
         
@@ -137,16 +192,31 @@ def mepfl_22(path):
         for index in range(0, len(trace_list)):
             if trace_anomaly_list[index] == 1:
                 anomaly_trace_list.append(trace_list[index])
-        
-        loc_trace_vector_list = [_.vector for _ in anomaly_trace_list]
-        probs = mlp_model.predict_proba(loc_trace_vector_list)
-        logger.info(f"{probs.shape}")
-        sum_proba = np.zeros((len(total_service_list)))
 
-        for prob in probs:
-            # print(prob)
-            sum_proba += prob
-        
+        loc_trace_vector_list = [_.vector for _ in anomaly_trace_list]
+        if len(loc_trace_vector_list) == 0:
+            continue
+
+        if mlp_type == 'pytorch':
+            # PyTorch GPU inference — mlp_model is (model, reverse_label_map)
+            pt_model, reverse_map = mlp_model
+            with torch.no_grad():
+                x_tensor = torch.FloatTensor(np.array(loc_trace_vector_list)).to(_mepfl_device)
+                probs = pt_model(x_tensor).cpu().numpy()
+            # probs shape: (n_traces, n_mapped_classes)
+            # Remap back to full service list (40 entries)
+            sum_proba = np.zeros((len(total_service_list)))
+            for prob in probs:
+                for mapped_idx, p in enumerate(prob):
+                    orig_idx = reverse_map.get(str(mapped_idx), mapped_idx)
+                    if 0 <= orig_idx < len(total_service_list):
+                        sum_proba[orig_idx] += p
+        else:
+            probs = mlp_model.predict_proba(loc_trace_vector_list)
+            logger.info(f"{probs.shape}")
+            sum_proba = np.zeros((len(total_service_list)))
+            for prob in probs:
+                sum_proba += prob
         service_score_list = []
         for index in range(0, len(total_service_list)):
             service_score_list.append((total_service_list[index], sum_proba[index]))

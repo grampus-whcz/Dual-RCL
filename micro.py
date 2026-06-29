@@ -34,11 +34,22 @@ def run_SPOT(data,data_head, q=1e-3, d=300, n_init=None):
     for svc_id in range(len(data_head)):
         init_data = data[:n_init, svc_id] 	# initial batch
         _data = data[n_init:, svc_id]  		# stream
-        s = dSPOT(q,d)     	# DSPOT object
-        s.fit(init_data,_data) 	# data import
-        s.initialize() 	  		# initialization step
-        results = s.run()    	# run
-        result_dict[svc_id] = results
+        try:
+            s = dSPOT(q,d)     	# DSPOT object
+            s.fit(init_data,_data) 	# data import
+            s.initialize() 	  		# initialization step
+            results = s.run()    	# run
+            result_dict[svc_id] = results
+        except (ValueError, RuntimeError, ZeroDivisionError) as e:
+            # SPOT can fail on degenerate data (e.g., constant values, too few peaks)
+            # Fallback: use simple threshold (mean + 3*std)
+            threshold = np.mean(init_data) + 3 * max(np.std(init_data), 1e-8)
+            alarms = [i for i, v in enumerate(_data) if v > threshold]
+            result_dict[svc_id] = {
+                'thresholds': [threshold] * len(_data),
+                'alarms': alarms,
+                'n_alarms': len(alarms),
+            }
     return result_dict
 
 def get_eta(data,data_head,SPOT_res, n_init):

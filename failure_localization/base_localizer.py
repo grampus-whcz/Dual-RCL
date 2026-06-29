@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import numpy as np
+
 logger = logging.getLogger("failure_localization")
 
 
@@ -44,6 +46,9 @@ class LocalizationResult:
 
     # Ordered list of root cause metric names (raw, for programmatic use)
     raw_root_metrics: List[str] = field(default_factory=list)
+
+    # Raw per-node root-cause scores from the localizer (for confidence estimation)
+    raw_root_scores: np.ndarray = field(default=None)
 
 
 class BaseLocalizer(ABC):

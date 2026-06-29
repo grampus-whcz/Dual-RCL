@@ -130,13 +130,18 @@ def mepfl(path):
                 anomaly_trace_list.append(trace_list[index])
         
         loc_trace_vector_list = [_.vector for _ in anomaly_trace_list]
+        if len(loc_trace_vector_list) == 0:
+            continue
         probs = mlp_model.predict_proba(loc_trace_vector_list)
         logger.info(f"{probs.shape}")
+        # Map MLP class probabilities to service indices (handles variable class counts
+        # when the model was trained on data missing some services)
         sum_proba = np.zeros((len(total_service_list)))
-
+        mlp_classes = mlp_model.classes_  # e.g. [0,1,2,...,8] for 9-class model
         for prob in probs:
-            # print(prob)
-            sum_proba += prob
+            for ci, cls_idx in enumerate(mlp_classes):
+                if cls_idx < len(sum_proba):
+                    sum_proba[cls_idx] += prob[ci]
         
         service_score_list = []
         for index in range(0, len(total_service_list)):

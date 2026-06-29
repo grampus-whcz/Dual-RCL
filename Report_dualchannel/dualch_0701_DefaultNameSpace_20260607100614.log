@@ -1,5 +1,0 @@
-[2026-07-06 10:10:14 INFO]   [Phase 9] completed in 78.6s
-[2026-07-06 10:10:14 INFO] ============================================================
-[2026-07-06 10:10:14 INFO]   ALL PHASES COMPLETE
-[2026-07-06 10:10:14 INFO] ============================================================
-[2026-07-06 10:10:14 INFO] [EVAL] {"type": "e2e_latency", "duration_s": 240.01, "date": "0701", "time": "15-52", "anomaly_method": "tranad", "rca_method": "default", "model": "ollama-qwen3-14b"}

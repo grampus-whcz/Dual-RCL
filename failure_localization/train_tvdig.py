@@ -29,6 +29,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--device", type=str, default="auto")
+    # Regularization (anti-overfit for small datasets like CCF AIOps)
+    parser.add_argument("--feat-drop", type=float, default=0.3, help="Feature dropout (default 0.3)")
+    parser.add_argument("--weight-decay", type=float, default=1e-3, help="L2 weight decay")
+    parser.add_argument("--aug-times", type=int, default=20, help="Data augmentation multiplier")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -39,12 +43,24 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        weight_decay=args.weight_decay,
+        feat_drop=args.feat_drop,
+        aug_times=args.aug_times,
     )
 
     # Build dataset
     logger = logging.getLogger("train_tvdig")
     logger.info("Building dataset...")
     train_data, aug_data, test_data, embedding_cache = build_training_dataset(config)
+
+    # Auto-set ft_num to match the number of failure types in the data
+    # (GAIA default is 5, but CCF AIOps has 15+ fault types)
+    if train_data:
+        max_ft_id = max(g["failure_type_id"] for g in train_data)
+        if test_data:
+            max_ft_id = max(max_ft_id, max(g["failure_type_id"] for g in test_data))
+        config.ft_num = max_ft_id + 1
+        logger.info(f"Auto-set ft_num={config.ft_num} (max failure_type_id={max_ft_id})")
 
     # Save embedding cache for inference
     os.makedirs(args.output_dir, exist_ok=True)

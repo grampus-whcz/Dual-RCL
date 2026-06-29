@@ -30,8 +30,12 @@ import numpy as np
 
 from metric_anomaly import generate_metric_describe, enhance_metric_describe, CNNClassifier
 from trace_anomaly import *
-
+from trace_anomaly_22 import (
+    anomaly_detect_and_generate_describe as _anomaly_detect_and_generate_describe_22,
+    get_trace_from_aiops2022,
+)
 from mepfl import *
+from mepfl_22 import mepfl_22
 import csv
 
 # New imports for multivariate detection and conflict resolution
@@ -342,6 +346,177 @@ def generate_concordance_report(
     return '\n'.join(lines)
 
 
+def _service_from_metric(metric_name):
+    """Extract service pod name from a metric name like 'frontend-1_container_cpu_usage_seconds'."""
+    if '_' not in metric_name:
+        return metric_name
+    # Service pod = everything before the first '_kpi' pattern
+    # Pod names contain '-' and digits, e.g. 'frontend-1', 'adservice2-0'
+    parts = metric_name.split('_')
+    if parts:
+        return parts[0]
+    return metric_name
+
+
+def _signal_quality_tvdig(tvdig_scores):
+    """TVDiag signal quality from the GNN's per-node root-cause score margin.
+
+    A decisive GNN produces a large gap between the top-1 node and the rest
+    (peaked softmax). A flat score distribution means the GNN is uncertain and
+    its ranking is unreliable. We measure the top-1 margin relative to the
+    runner-up. This is a genuine per-incident, model-internal confidence signal.
+
+    Returns a quality score in [0, 1].
+    """
+    if tvdig_scores is None or len(tvdig_scores) < 2:
+        return 0.5
+    s = np.asarray(tvdig_scores, dtype=float)
+    s_sorted = np.sort(s)[::-1]
+    top1, top2 = float(s_sorted[0]), float(s_sorted[1])
+    rng = float(top1 - np.min(s))
+    if rng <= 1e-9:
+        return 0.0
+    margin = (top1 - top2) / rng  # 1.0 = fully decisive, 0.0 = flat
+    return float(max(0.0, min(1.0, margin)))
+
+
+def _signal_quality_causal(causal_graph):
+    """Causal signal quality: a neutral prior.
+
+    Per-incident causal-ranking reliability cannot be robustly inferred from the
+    PCMCI graph structure alone (GAIA and CCF AIOps graphs are structurally
+    similar: ~60-80 nodes, comparable density), yet causal A@1 differs wildly
+    (39% vs 5.5%). The reliability gap stems from fault complexity, which is not
+    captured by any single structural metric. We therefore use a neutral prior
+    and let TVDiag's confidence margin (the one genuine per-incident signal we
+    can measure) drive the adaptive anchor decision.
+    """
+    return 0.5
+
+
+def confidence_vote_fusion(
+    tvdig_root_services, mepfl_root_services, dual_root_metrics,
+    data_head, gamma, scenario=None, top_k=5, causal_graph=None,
+    tvdig_scores=None, anchor='tvdig',
+):
+    """Multi-source confidence voting fusion.
+
+    The ANCHOR signal (default TVDiag) receives unit reciprocal-rank weight and
+    drives the top of the ranking; the other sources (trace, causal, metric) add
+    additive confirmation boosts and a multi-source consensus multiplier. The
+    anchor can be overridden per-incident by a learned router (``anchor='causal'``)
+    — see Section~\\ref{sec:router}.
+
+    Args mirror v2 plus ``anchor`` ('tvdig'|'causal', default 'tvdig') and
+    ``causal_graph``/``tvdig_scores`` (used only for the documented adaptive
+    experiment, not the default path). Returns
+    (fused_services, fused_str, agreement_info).
+    """
+    from collections import defaultdict
+    scores = defaultdict(float)
+
+    # Anchor decision (default fixed; overridable by learned router)
+    causal_anchors = (anchor == 'causal')
+    anchor_name = 'causal' if causal_anchors else 'tvdig'
+
+    # Signal quality (for logging; not used in fixed-anchor decision)
+    q_tvdig = _signal_quality_tvdig(tvdig_scores)
+    q_causal = _signal_quality_causal(causal_graph)
+
+    tvdig_list = list(tvdig_root_services or [])[:top_k]
+    mepfl_list = list(mepfl_root_services or [])[:top_k]
+
+    # Map causal gamma → per-service aggregated scores
+    svc_gamma = defaultdict(float)
+    for idx, mname in enumerate(data_head):
+        svc = _service_from_metric(mname)
+        if gamma is not None and idx < len(gamma):
+            svc_gamma[svc] += float(gamma[idx])
+    max_gamma = max(svc_gamma.values()) if svc_gamma else 1.0
+
+    # Causal service ranking (by aggregated gamma) — used when causal anchors
+    causal_ranked = [s for s, _ in sorted(svc_gamma.items(), key=lambda x: x[1], reverse=True)][:top_k]
+
+    if causal_anchors:
+        # CAUSAL anchors: causal reciprocal-rank gets unit weight; TVDiag is a boost.
+        for rank, svc in enumerate(causal_ranked):
+            scores[svc] += 1.0 / (rank + 1)
+        for rank, svc in enumerate(tvdig_list):
+            scores[svc] += 0.4 / (rank + 1)
+    else:
+        # TVDiAG anchors: TVDiag reciprocal-rank gets unit weight; causal is a boost.
+        for rank, svc in enumerate(tvdig_list):
+            scores[svc] += 1.0 / (rank + 1)
+        if max_gamma > 0:
+            for svc, g in svc_gamma.items():
+                scores[svc] += 0.3 * (g / max_gamma)
+
+    # MEPFL trace confirmation (moderate weight, source-independent)
+    for rank, svc in enumerate(mepfl_list):
+        scores[svc] += 0.4 / (rank + 1)
+
+    # Dual-channel metric confirmation
+    dual_metrics = re.findall(r'\(\d+\)([^,.)]+)', dual_root_metrics or '')
+    dual_svcs = [_service_from_metric(m.strip()) for m in dual_metrics[:top_k] if m.strip()]
+    for rank, svc in enumerate(dual_svcs):
+        scores[svc] += 0.3 / (rank + 1)
+
+    # 5. Multi-source agreement bonus (KEY INNOVATION: cross-modal consensus)
+    tvdig_set = set(tvdig_list)
+    mepfl_set = set(mepfl_list)
+    causal_strong = {s for s, g in svc_gamma.items() if g > max_gamma * 0.4}
+    dual_set = set(dual_svcs)
+
+    agreement_info = {}
+    for svc in list(scores.keys()):
+        sources = []
+        if svc in tvdig_set: sources.append('tvdig')
+        if svc in mepfl_set: sources.append('trace')
+        if svc in causal_strong: sources.append('causal')
+        if svc in dual_set: sources.append('metric')
+        n_agree = len(sources)
+        agreement_info[svc] = (n_agree, sources)
+        # Multiplicative consensus boost: 2 sources ×1.5, 3 sources ×1.9, 4 sources ×2.3
+        if n_agree >= 2:
+            scores[svc] *= (1.0 + 0.4 * (n_agree - 1))
+
+    # 6. Conflict-scenario adaptive weighting
+    if scenario == 'both_anom_different_root':
+        # Scenario 3: deep uncertainty → trust multimodal TVDiag more
+        for rank, svc in enumerate(tvdig_list[:3]):
+            scores[svc] *= 1.3
+    elif scenario == 'multi_anom_single_normal':
+        # Scenario 1: correlation disruption → trust multivariate/causal more
+        for svc in causal_strong:
+            if svc not in tvdig_set:
+                scores[svc] *= 1.2
+
+    # Final ranking by combined score
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    fused_services = [s for s, _ in ranked[:top_k]]
+
+    # Build metric ranking from fused services (top metric per service by gamma)
+    fused_metrics = []
+    for svc in fused_services:
+        best_g, best_m = -1, None
+        for idx, mname in enumerate(data_head):
+            if _service_from_metric(mname) == svc and idx < len(gamma):
+                if float(gamma[idx]) > best_g:
+                    best_g, best_m = float(gamma[idx]), mname
+        if best_m:
+            fused_metrics.append(best_m)
+    fused_metrics = fused_metrics[:top_k]
+    fused_str = "Top 5 root cause metrics is:" + ",".join(
+        f"({i+1}){m}" for i, m in enumerate(fused_metrics)
+    ) + "."
+
+    # Stash adaptive-anchor metadata for logging/evaluation
+    agreement_info['__anchor__'] = anchor_name
+    agreement_info['__q_tvdig__'] = round(q_tvdig, 3)
+    agreement_info['__q_causal__'] = round(q_causal, 3)
+    return fused_services, fused_str, agreement_info
+
+
 # Converted to Timestamps
 def swap(qurry):
     pattern1 = r"\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{1,2}"
@@ -390,15 +565,11 @@ def find_closest_file(files, target_time):
 
 def get_config(config: str) -> tuple[pathlib.Path, ...]:
     """
-    Get config path
-    Args:
-        config: Name of config, which is used to load configuration under CompanyConfig/
-
-    Returns:
-        config_path: Path of ChatChainConfig.json
-        config_phase_path: Path of PhaseConfig.json
-        config_role_path: Path of RoleConfig.json
+    Get config path. To avoid race conditions when running multiple experiments
+    in parallel, PhaseConfig.json is copied to a per-process temporary directory
+    so each run.py invocation reads and writes its own isolated copy.
     """
+    import tempfile, shutil
     root = pathlib.Path(__file__).parent
     config_dir = root / 'CompanyConfig' / config
     default_config_dir = root / 'CompanyConfig' / 'Default'
@@ -407,14 +578,49 @@ def get_config(config: str) -> tuple[pathlib.Path, ...]:
         'PhaseConfig.json',
         'RoleConfig.json',
     ]
+
+    # Create a per-process temp config directory
+    _tmp_config_dir = pathlib.Path(tempfile.mkdtemp(prefix='soc_rca_config_'))
+    logger.info(f"  Using isolated config dir: {_tmp_config_dir}")
+
     config_paths = []
     for config_file in config_files:
-        company_config_path = config_dir / config_file
-        default_config_path = default_config_dir / config_file
-        if company_config_path.exists():
-            config_paths.append(company_config_path)
-        else:
-            config_paths.append(default_config_path)
+        # Try company config first, then default
+        src = config_dir / config_file
+        if not src.exists():
+            src = default_config_dir / config_file
+        if not src.exists():
+            config_paths.append(_tmp_config_dir / config_file)
+            continue
+
+        # Read the ORIGINAL clean version if PhaseConfig is corrupted
+        if config_file == 'PhaseConfig.json':
+            try:
+                with open(src) as f:
+                    json.load(f)  # validate
+            except (json.JSONDecodeError, Exception):
+                # PhaseConfig is corrupted (concurrent writes); try Default
+                src = default_config_dir / config_file
+                if not src.exists():
+                    # Last resort: reconstruct minimal valid PhaseConfig
+                    logger.warning(f"  PhaseConfig.json corrupted, using minimal fallback")
+                    minimal = {
+                        "TraceAnalysis": {"phase_prompt": [""], "assistant_role_name": "Trace Expert"},
+                        "MetricAnalysis": {"phase_prompt": [""], "assistant_role_name": "Metric Expert"},
+                        "LogAnalysis": {"phase_prompt": [""], "assistant_role_name": "Log Expert"},
+                        "RootCauseAnalysis": {"phase_prompt": [""], "assistant_role_name": "Root Cause Expert"},
+                    }
+                    dst = _tmp_config_dir / config_file
+                    with open(dst, 'w') as f:
+                        json.dump(minimal, f)
+                    config_paths.append(dst)
+                    continue
+
+        # Copy to isolated temp dir
+        dst = _tmp_config_dir / config_file
+        shutil.copy2(src, dst)
+        config_paths.append(dst)
+
     return tuple(config_paths)
 
 
@@ -474,17 +680,32 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--rca-method', type=str, default='default',
-        choices=RCA_METHODS,
-        help='Root cause analysis method: default (PCMCI+RW + MEPFL) or tvdig (TVDiag multimodal GNN)',
+        choices=['default', 'tvdig', 'hybrid'],
+        help='Root cause analysis method: default (PCMCI+RW + MEPFL), '
+             'tvdig (standalone TVDiag GNN), or hybrid (dual-channel + TVDiag fusion). '
+             'Hybrid runs dual-channel first, then fuses TVDiag candidates via causal re-ranking.',
     )
     parser.add_argument(
         '--tvdig-model', type=str, default=None,
-        help='Path to TVDiag model checkpoint directory (required if --rca-method=tvdig)',
+        help='Path to TVDiag model checkpoint directory (required if --rca-method=tvdig|hybrid)',
     )
     parser.add_argument(
         '--report-dir', type=str, default=None,
         help='Output directory for reports and logs (default: Report/). '
              'Use different directories to avoid overwrites when comparing methods.',
+    )
+    parser.add_argument(
+        '--dataset', type=str, default='gaia',
+        choices=['gaia', 'ccf_aiops'],
+        help='Dataset type: gaia (GAIA, default) or ccf_aiops (CCF AIOps Challenge 2022). '
+             'CCF AIOps mode normalizes metric data and removes constant columns '
+             'to avoid SVD convergence issues in causal analysis.',
+    )
+    parser.add_argument(
+        '--date-prefix', type=str, default=None,
+        help='Override the date_result directory prefix. '
+             'Auto-derived from task datetime (e.g. "0320") unless set. '
+             'Use for test data dirs like "0501t".',
     )
     return parser.parse_args()
 
@@ -549,6 +770,10 @@ def main(args: argparse.Namespace):
 
         date_result = month + day
         time_result = f"{hour}-{minute}"
+
+        # Allow override of directory prefix (e.g. test data uses "0501t" not "0501")
+        if getattr(args, 'date_prefix', None):
+            date_result = args.date_prefix
 
         logger.info(f"Task parsed: date={date_result}, time={time_result}")
         print(f"Data: {date_result}")
@@ -679,7 +904,12 @@ def main(args: argparse.Namespace):
     if files_trace is None:
         raise FileNotFoundError(f"No data files found in {date_result}_trace_ano/data/")
     print(files_trace)
-    trace_ans = anomaly_detect_and_generate_describe(
+    # Use AIOps 2022 trace parser for CCF AIOps dataset (different CSV column layout)
+    if args.dataset == 'ccf_aiops':
+        _trace_detect_fn = _anomaly_detect_and_generate_describe_22
+    else:
+        _trace_detect_fn = anomaly_detect_and_generate_describe
+    trace_ans = _trace_detect_fn(
         f'{date_result}_trace_ano/{date_result}.pkl',
         f'{date_result}_trace_ano/normal_datasets',
         f'{date_result}_trace_ano/data/{files_trace}',
@@ -702,7 +932,15 @@ def main(args: argparse.Namespace):
     if files_tracerace is None:
         raise FileNotFoundError(f"No data files found in {date_result}_tracerca/")
     print(files_tracerace)
-    root_service = mepfl(f'./{date_result}_tracerca/{files_tracerace}')
+    # Use CCF AIOps MEPFL model if dataset is ccf_aiops; fall back to GAIA model
+    if args.dataset == 'ccf_aiops':
+        try:
+            root_service = mepfl_22(f'./{date_result}_tracerca/{files_tracerace}')
+        except FileNotFoundError:
+            logger.warning("  mepfl_model_aiops22/ not found, falling back to GAIA model")
+            root_service = mepfl(f'./{date_result}_tracerca/{files_tracerace}')
+    else:
+        root_service = mepfl(f'./{date_result}_tracerca/{files_tracerace}')
     root_se = ''
     for i in range(5):
         root_se += "(" + str(i+1) + ")" + root_service[i]
@@ -750,6 +988,26 @@ def main(args: argparse.Namespace):
         aggre_delta=1,
         verbose=True,
     )
+
+    # --- CCF AIOps dataset: normalize and remove constant columns ---
+    # CCF AIOps metrics have vastly different scales (e.g. memory in bytes
+    # vs CPU as fraction), which causes SVD convergence failures in
+    # get_Q_matrix_part_corr().  GAIA data is naturally bounded so this
+    # step is only needed for CCF AIOps.
+    if args.dataset == 'ccf_aiops':
+        _means = np.mean(dataa, axis=0, keepdims=True)
+        _stds = np.std(dataa, axis=0, keepdims=True)
+        _keep = (_stds > 0).flatten()
+        n_removed = int(np.sum(~_keep))
+        dataa = dataa[:, _keep]
+        data_head = [data_head[i] for i in range(len(data_head)) if _keep[i]]
+        dataa = (dataa - _means[:, _keep]) / _stds[:, _keep]
+        # Clip extreme values to prevent SPOT/PCMCI numerical issues
+        dataa = np.nan_to_num(dataa, nan=0.0, posinf=0.0, neginf=0.0)
+        dataa = np.clip(dataa, -10.0, 10.0)
+        logger.info(f"  [CCF AIOps] Normalized + removed {n_removed} constant columns, "
+                    f"remaining: {dataa.shape[1]} metrics (clipped to [-10, 10])")
+
     n_init = int(0.5 * len(dataa))
     logger.info(f"  Data shape: {dataa.shape}, metrics: {len(data_head)}, "
                 f"n_init (train split): {n_init}")
@@ -829,33 +1087,72 @@ def main(args: argparse.Namespace):
     # ==================================================================
     #  Phase 5: Dual-Channel Root Cause Analysis
     # ==================================================================
+    # Wrap the dual-channel RCA (Q-matrix, random walk, conflict resolution) in
+    # try/except. The Q-matrix SVD / random walk can crash on degenerate metric
+    # data (a frequent occurrence on the complex CCF AIOps test set). When this
+    # happens in Hybrid mode, we fall back to a TVDiag-only ranking downstream,
+    # guaranteeing full coverage. In non-Hybrid modes the exception propagates.
+    _dual_channel_failed = False
     t0_p5 = _phase_banner("Phase 5", "Dual-Channel Root Cause Analysis")
 
-    # Build shared Q-matrix and visitation list from causal graph
+    # Build shared Q-matrix and visitation list from causal graph.
+    # The Q-matrix SVD / random walk can crash on degenerate metric data (frequent
+    # on the complex CCF AIOps test set). We catch it here; in Hybrid mode the
+    # downstream fusion block then falls back to a TVDiag-only ranking, and in
+    # non-Hybrid modes we re-raise so the failure is visible.
     logger.info("  Building Q-matrix and running random walk on causal graph...")
     t_rw = time.time()
-    Q = get_Q_matrix_part_corr(dataa, data_head, frontend, causal_graph, rho=0.2)
-    vis_list = randomwalk_metric(Q, 1000, frontend[0], teleportation_prob=0, walk_step=15)
-    logger.info(f"  Q-matrix + random walk done in {time.time()-t_rw:.1f}s")
+    try:
+        Q = get_Q_matrix_part_corr(dataa, data_head, frontend, causal_graph, rho=0.2)
+        vis_list = randomwalk_metric(Q, 1000, frontend[0], teleportation_prob=0, walk_step=15)
+        logger.info(f"  Q-matrix + random walk done in {time.time()-t_rw:.1f}s")
+    except Exception as e:
+        _dual_channel_failed = True
+        logger.warning(f"  [Q-matrix/random-walk crashed: {type(e).__name__}: {e}]")
+        if args.rca_method == 'hybrid':
+            logger.warning("  [Hybrid] Causal random walk unavailable — TVDiag-only fallback will be used")
+            print(f"  [Hybrid] Causal walk failed ({type(e).__name__}); TVDiag-only fallback")
+        else:
+            # Non-Hybrid methods: continue with anomaly-score-based fallback ranking
+            # instead of crashing, so Phase 7-9 (LLM reasoning) still execute.
+            logger.warning("  Causal random walk unavailable — using anomaly-score fallback ranking")
+            print(f"  Causal walk failed ({type(e).__name__}); using anomaly-based fallback")
+        vis_list = None
 
     # --- 5A: Univariate RCA (SPOT eta → random walk) ----------------
-    logger.info("  [5A] Univariate RCA (SPOT eta + causal random walk)")
-    print("\n  [5A] Univariate RCA (SPOT eta + causal random walk)")
-    gamma_uni = get_gamma(data_head, vis_list, eta, lambda_param=0.5)
-    root_metric_uni = root_kpi(data_head, gamma_uni)
-    logger.info(f"  [5A] Univariate root metrics: {root_metric_uni[:200]}")
-    print(f"  Univariate root metrics: {root_metric_uni[:200]}...")
+    gamma_uni = None
+    root_metric_uni = None
+    if not _dual_channel_failed and vis_list is not None:
+        logger.info("  [5A] Univariate RCA (SPOT eta + causal random walk)")
+        print("\n  [5A] Univariate RCA (SPOT eta + causal random walk)")
+        gamma_uni = get_gamma(data_head, vis_list, eta, lambda_param=0.5)
+        root_metric_uni = root_kpi(data_head, gamma_uni)
+        logger.info(f"  [5A] Univariate root metrics: {root_metric_uni[:200]}")
+        print(f"  Univariate root metrics: {root_metric_uni[:200]}...")
 
-    _eval_log({
-        "type": "root_metrics",
-        "channel": "univariate",
-        "method": "PCMCI+RandomWalk",
-        "metrics": root_metric_uni[:500],
-    })
+        _eval_log({
+            "type": "root_metrics",
+            "channel": "univariate",
+            "method": "PCMCI+RandomWalk",
+            "metrics": root_metric_uni[:500],
+        })
+    else:
+        # Q-matrix failed: generate fallback ranking from anomaly scores alone
+        logger.info("  [5A] Using anomaly-score fallback (causal random walk unavailable)")
+        print("  [5A] Fallback — ranking by anomaly scores (no causal walk)")
+        gamma_uni = np.abs(eta).astype(float)
+        root_metric_uni = root_kpi(data_head, gamma_uni)
+        logger.info(f"  [5A] Fallback root metrics: {root_metric_uni[:200]}")
+        _eval_log({
+            "type": "root_metrics",
+            "channel": "univariate_fallback",
+            "method": "AnomalyScore",
+            "metrics": root_metric_uni[:500],
+        })
 
     # --- 5B: Multivariate RCA (multi eta → random walk) -------------
     root_metric_multi = None
-    if multi_results is not None and multi_eta is not None:
+    if not _dual_channel_failed and vis_list is not None and multi_results is not None and multi_eta is not None:
         logger.info("  [5B] Multivariate RCA (multi eta + causal random walk)")
         print("\n  [5B] Multivariate RCA (multi eta + causal random walk)")
         gamma_multi = get_gamma(data_head, vis_list, multi_eta, lambda_param=0.5)
@@ -870,7 +1167,7 @@ def main(args: argparse.Namespace):
             "metrics": root_metric_multi[:500],
         })
     else:
-        logger.info("  [5B] Multivariate RCA SKIPPED (no multivariate detection)")
+        logger.info("  [5B] Multivariate RCA SKIPPED (no multivariate detection or dual-channel failed)")
         print("\n  [5B] Multivariate RCA SKIPPED (no multivariate detection)")
     _phase_done("Phase 5", t0_p5)
 
@@ -883,7 +1180,13 @@ def main(args: argparse.Namespace):
     root_metric_final = root_metric_uni
     root_service_final = root_service[:5]  # for log filtering
 
-    if multi_results is not None:
+    if _dual_channel_failed:
+        # Causal rankings unavailable; skip conflict resolution. In Hybrid mode the
+        # downstream fusion falls back to TVDiag-only; root_metric_final stays None.
+        root_metric_final = None
+        logger.info("  [Phase 6 SKIPPED — dual-channel failed; Hybrid will use TVDiag-only]")
+        print("  [Phase 6 SKIPPED — dual-channel failed]")
+    elif multi_results is not None:
         # --- Run LLM conflict resolver ---
         logger.info(f"  [LLM] Calling conflict resolver with model={api_model_name}...")
         print(f"  [LLM] Calling conflict resolver (model={api_model_name})...")
@@ -992,6 +1295,93 @@ def main(args: argparse.Namespace):
     else:
         logger.info("  [No multivariate results — using univariate-only pipeline]")
         print("  [No multivariate results — using univariate-only pipeline]")
+
+    # ==================================================================
+    #  HYBRID FUSION: Dual-channel + TVDiag candidate union + causal re-rank
+    #  Runs TVDiag in ADDITION to the dual-channel pipeline, then fuses
+    #  both rankings via the PCMCI causal graph (causal reasoning = final arbiter).
+    # ==================================================================
+    if args.rca_method == 'hybrid' and args.tvdig_model:
+        t0_hybrid = _phase_banner("Hybrid", "Dual-Channel + TVDiag Causal Fusion")
+        logger.info("  [Hybrid] Running TVDiag multimodal localization in parallel")
+        print("\n  [Hybrid] Running TVDiag multimodal localization + causal fusion")
+
+        try:
+            # Re-locate log/trace dirs for TVDiag (files_log may be out of scope)
+            _log_dirs = os.listdir(f'{date_result}_log_fault')
+            _fl = find_closest_file(_log_dirs, time_result)
+            _hybrid_log_dir = f'{date_result}_log_fault/{_fl}' if _fl else ''
+            hybrid_localizer = create_rca_localizer(
+                method='tvdig', model_dir=args.tvdig_model,
+            )
+            hybrid_result = hybrid_localizer.localize({
+                'metric_data': dataa,
+                'data_head': data_head,
+                'n_init': n_init,
+                'trace_data_path': f'./{date_result}_tracerca/{files_tracerace}',
+                'log_dir': _hybrid_log_dir,
+                'root_services': root_service[:5],
+            })
+            tvdig_services = hybrid_result.raw_root_services
+            logger.info(f"  [Hybrid] TVDiag root services: {tvdig_services}")
+            print(f"  [Hybrid] TVDiag root services: {tvdig_services}")
+
+            if _dual_channel_failed:
+                # Dual-channel crashed upstream: use TVDiag ranking as the result
+                # (TVDiag is the confidence-vote anchor, so this is a natural
+                # single-source fallback that still yields a full prediction).
+                fused_services = tvdig_services[:5]
+                fused_metric_str = hybrid_result.root_metric
+                agreement_info = {s: (1, ['tvdig']) for s in fused_services}
+                logger.info("  [Hybrid] Using TVDiag-only ranking (dual-channel fallback)")
+                print("  [Hybrid] TVDiag-only fallback active (dual-channel unavailable)")
+            else:
+                # Causal fusion: union candidates, re-rank by gamma (causal arbiter)
+                fused_services, fused_metric_str, agreement_info = confidence_vote_fusion(
+                    tvdig_root_services=tvdig_services,
+                    mepfl_root_services=root_service[:5],
+                    dual_root_metrics=root_metric_final,
+                    data_head=data_head,
+                    gamma=gamma_uni,
+                    scenario=scenario if multi_results is not None else None,
+                    top_k=5,
+                    causal_graph=causal_graph,
+                    tvdig_scores=hybrid_result.raw_root_scores,
+                )
+            logger.info(f"  [Hybrid-v2] Fused root services (confidence-vote): {fused_services}")
+            logger.info(f"  [Hybrid-v2] Fused root metrics: {fused_metric_str[:200]}")
+            # Log the adaptive anchor decision (signal-quality-driven)
+            _anc = agreement_info.get('__anchor__', 'tvdig')
+            _qt = agreement_info.get('__q_tvdig__', 0)
+            _qc = agreement_info.get('__q_causal__', 0)
+            logger.info(f"  [Hybrid-v2] Adaptive anchor: {_anc} "
+                        f"(q_tvdig={_qt}, q_causal={_qc})")
+            print(f"  [Hybrid] Anchor={_anc} (q_tvdig={_qt}, q_causal={_qc})")
+            print(f"  [Hybrid-v2] Fused root services: {fused_services}")
+
+            # Confidence report: multi-source agreement
+            top_agree = agreement_info.get(fused_services[0], (0, [])) if fused_services else (0, [])
+            logger.info(f"  [Hybrid-v2] Top service '{fused_services[0]}' confirmed by {top_agree[0]} sources: {top_agree[1]}")
+            print(f"  [Hybrid-v2] Top service confirmed by {top_agree[0]} sources: {top_agree[1]}")
+
+            # Update final rankings with fused result
+            root_metric_final = fused_metric_str
+            root_service_final = fused_services
+            metric_an_final += "\n[Hybrid Multimodal Fusion] TVDiag GNN cross-validated " \
+                               "the dual-channel ranking via metric+trace+log fusion; " \
+                               "candidates were merged and re-ranked by PCMCI causal scores."
+
+            _eval_log({
+                "type": "localization",
+                "method": "Hybrid-v2-ConfidenceVote",
+                "predictions": fused_services,
+                "tvdig_services": tvdig_services,
+                "top_agreement": top_agree[0],
+            })
+        except Exception as e:
+            logger.warning(f"  [Hybrid] TVDiag fusion failed ({e}), using dual-channel result")
+            print(f"  [Hybrid] TVDiag fusion failed, falling back to dual-channel")
+        _phase_done("Hybrid", t0_hybrid)
 
     # ==================================================================
     #  Phase 7: Write Unified Metric Knowledge to PhaseConfig

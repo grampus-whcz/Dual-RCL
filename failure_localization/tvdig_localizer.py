@@ -47,6 +47,29 @@ class TVDiagLocalizer(BaseLocalizer):
         self.config = config or TVDiagConfig()
         self.model_dir = model_dir
 
+        # Detect CCF AIOps checkpoint: if dir name contains 'ccf', override config
+        self._is_ccf_aiops = 'ccf' in os.path.basename(model_dir.rstrip('/')).lower()
+        if self._is_ccf_aiops:
+            # Override node names and topology for CCF AIOps (40 pods)
+            self.config.NODE_NAMES = [
+                'frontend-0','frontend-1','frontend-2','frontend2-0',
+                'recommendationservice-0','recommendationservice-1','recommendationservice-2','recommendationservice2-0',
+                'checkoutservice-0','checkoutservice-1','checkoutservice-2','checkoutservice2-0',
+                'paymentservice-0','paymentservice-1','paymentservice-2','paymentservice2-0',
+                'currencyservice-0','currencyservice-1','currencyservice-2','currencyservice2-0',
+                'emailservice-0','emailservice-1','emailservice-2','emailservice2-0',
+                'cartservice-0','cartservice-1','cartservice-2','cartservice2-0',
+                'productcatalogservice-0','productcatalogservice-1','productcatalogservice-2','productcatalogservice2-0',
+                'shippingservice-0','shippingservice-1','shippingservice-2','shippingservice2-0',
+                'adservice-0','adservice-1','adservice-2','adservice2-0',
+            ]
+            # Use fully-connected fallback edges (per-service topology varies per event)
+            n = len(self.config.NODE_NAMES)
+            self.config.GAIA_EDGES = [[i, j] for i in range(n) for j in range(n) if i != j][:50]
+            # ft_num must match the checkpoint; CCF AIOps trained with 10 (pod-level faults only)
+            self.config.ft_num = 10
+            logger.info("  [CCF AIOps] Using 40-node CCF AIOps topology for TVDiag inference")
+
         # Load model
         self.model = MainModel(self.config).to(self.device)
         ckpt_path = os.path.join(model_dir, "tvdig.pt")
@@ -136,8 +159,16 @@ class TVDiagLocalizer(BaseLocalizer):
 
         # Failure type prediction
         type_pred = torch.argmax(type_logit, dim=1).item()
-        type_names = ["normal", "login failure", "memory anomalies",
-                      "file moving program", "cpu anomalies"]
+        if self._is_ccf_aiops:
+            # ft_num=10 matches checkpoint (pod/service-level faults only)
+            type_names = [
+                "normal", "k8s容器读io负载", "k8s容器内存负载", "k8s容器网络资源包损坏",
+                "k8s容器cpu负载", "k8s容器网络丢包", "k8s容器网络资源包重复发送",
+                "k8s容器网络延迟", "k8s容器进程中止", "k8s容器写io负载",
+            ]
+        else:
+            type_names = ["normal", "login failure", "memory anomalies",
+                          "file moving program", "cpu anomalies"]
         failure_type = type_names[type_pred] if type_pred < len(type_names) else "unknown"
 
         # --- Step 5: Format results ---
@@ -167,6 +198,7 @@ class TVDiagLocalizer(BaseLocalizer):
             root_cause_knowledge=root_cause_knowledge,
             raw_root_services=top5_services,
             raw_root_metrics=top5_metrics[:5],
+            raw_root_scores=scores,
         )
 
     # ----- Internal helpers -----

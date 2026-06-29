@@ -114,6 +114,10 @@ def build_training_dataset(config: TVDiagConfig):
 
         # Root label
         local_root = row["instance"]
+        # Skip events whose root service is not in the global node dictionary
+        # (e.g., node-level faults like "node-6" which aren't service pods)
+        if local_root not in node2idx:
+            continue
         root_list = [0] * num_nodes
         if local_root in nodes:
             root_list[nodes.index(local_root)] = 1
@@ -215,9 +219,14 @@ def build_inference_graph_from_cache(
 ) -> dict:
     """Build inference graph using precomputed embedding cache.
 
+    Fixed: cache is keyed by SERVICE NODE NAME (not event string).
+    Nodes with anomaly events get their cached service embedding (scaled by
+    event count); nodes without anomalies get zero features. This creates
+    per-event variation so the model can rank anomalous nodes.
+
     Args:
         config: TVDiagConfig.
-        embedding_cache: dict from modality -> event_string -> numpy array.
+        embedding_cache: dict from modality -> node_name -> numpy array.
         metric_anomaly_events, trace_events, log_events: per-node event lists.
 
     Returns:
@@ -237,13 +246,13 @@ def build_inference_graph_from_cache(
         node_feats = torch.zeros(num_nodes, embedding_dim)
         cache = embedding_cache.get(mod_name, {})
         for node_idx, events in enumerate(events_per_node):
-            if events:
-                embs = []
-                for ev in events:
-                    if ev in cache:
-                        embs.append(cache[ev])
-                if embs:
-                    node_feats[node_idx] = torch.FloatTensor(np.mean(embs, axis=0))
+            node_name = node_names[node_idx]
+            # Look up by node NAME in cache; scale by event count (anomaly intensity)
+            if events and node_name in cache:
+                base_emb = cache[node_name]
+                # Scale embedding by log(1 + event_count) to reflect anomaly intensity
+                intensity = np.log1p(len(events))
+                node_feats[node_idx] = torch.FloatTensor(base_emb * min(intensity, 3.0))
         features[mod_name] = node_feats
 
     root = torch.zeros(num_nodes, dtype=torch.long)

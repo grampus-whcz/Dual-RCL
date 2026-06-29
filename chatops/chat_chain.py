@@ -184,8 +184,13 @@ class ChatChain:
             for child in directory.iterdir():
                 # logs with error trials are left in Report/
                 if child.is_file() and child.suffix != '.log' and child.suffix != '.py':
-                    child.unlink()
-                    print(f'{child} Removed.')
+                    try:
+                        child.unlink()
+                        print(f'{child} Removed.')
+                    except OSError:
+                        # NFS "Device or resource busy" — file still in use by another process;
+                        # safe to skip, it will be cleaned up later
+                        pass
 
         report_path = directory / '_'.join([self.case_name, self.namespace, self.start_time])
         self.chat_env.set_directory(report_path)
