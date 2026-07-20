@@ -224,7 +224,7 @@ def generate_causal_knowledge(causal_graph, data_head, gamma):
     )
 
     # Top influential nodes (by gamma score)
-    if gamma and len(gamma) == len(data_head):
+    if gamma is not None and len(gamma) == len(data_head):
         gamma_ranked = sorted(
             enumerate(gamma), key=lambda x: x[1], reverse=True
         )
@@ -235,7 +235,7 @@ def generate_causal_knowledge(causal_graph, data_head, gamma):
                 lines.append(f"  ({rank+1}) {data_head[idx]}: γ={score:.4f}")
 
     # Key propagation paths — find paths starting from high-gamma nodes
-    if gamma and len(gamma) == len(data_head):
+    if gamma is not None and len(gamma) == len(data_head):
         # Identify top root cause candidates (highest gamma)
         top_candidates = [idx for idx, _ in gamma_ranked[:3] if idx < len(data_head)]
 
@@ -1413,8 +1413,8 @@ def main(args: argparse.Namespace):
     # --- Metric knowledge (enhanced with multivariate analysis) ---
     metric_prompt = (
         "Knowledge:\n"
-        "Anomaly description:" + metric_an_final + '\n'
-        + root_metric_final + '\n'
+        "Anomaly description:" + (metric_an_final or '') + '\n'
+        + (root_metric_final or '') + '\n'
     )
     if multi_knowledge:
         metric_prompt += (
@@ -1425,7 +1425,11 @@ def main(args: argparse.Namespace):
 
     # --- Root cause knowledge (enhanced with causal paths + concordance) ---
     rc_prompt = (
-        "Knowledge: " + root_metric_final
+        "You are the fault diagnosis expert. Based on the evidence from Trace, Metric, and Log experts above, "
+        "write a comprehensive root cause analysis (at least 6 sentences). "
+        "Identify the single most likely root cause service and explain why. "
+        "Do NOT just say 'Finished' — you must produce a detailed diagnosis.\n\n"
+        "Knowledge: " + (root_metric_final or 'N/A')
         + '\nTop5 root cause services:' + root_se + '\n'
     )
     if causal_knowledge:

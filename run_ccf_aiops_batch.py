@@ -133,7 +133,7 @@ def main():
         print(f"  cmd: {' '.join(cmd[:8])}...")
 
         try:
-            result = subprocess.run(cmd, capture_output=False, timeout=600)
+            result = subprocess.run(cmd, capture_output=False, timeout=1800)
             if result.returncode == 0:
                 success += 1
                 print(f"  [OK] {case_name}")

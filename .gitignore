@@ -4,6 +4,7 @@ Datasets/
 data/
 models/
 logs/
+logs_bak/
 reports/
 docs/
 mepfl_model_aiops22
