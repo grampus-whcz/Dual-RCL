@@ -9,16 +9,30 @@ Usage:
 """
 
 import argparse
+import datetime
+import json
 import logging
 import os
+import random
 import sys
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
+import torch
+
 from failure_localization.tvdig_config import TVDiagConfig
 from failure_localization.tvdig_data import build_training_dataset, save_embedding_cache
 from failure_localization.tvdig_model import TVDiagTrainer
+
+
+def set_seed(seed: int):
+    """Seed every RNG that influences training (mirrors upstream TVDiag main.py)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def main():
@@ -33,9 +47,19 @@ def main():
     parser.add_argument("--feat-drop", type=float, default=0.3, help="Feature dropout (default 0.3)")
     parser.add_argument("--weight-decay", type=float, default=1e-3, help="L2 weight decay")
     parser.add_argument("--aug-times", type=int, default=20, help="Data augmentation multiplier")
+    # Reproducibility / embedding-upgrade experiment support
+    parser.add_argument("--seed", type=int, default=2, help="RNG seed (default 2)")
+    parser.add_argument("--embedding-dim", type=int, default=128,
+                        help="Node feature dimension produced by the upstream encoder (default 128)")
+    parser.add_argument("--cache-train-only", type=int, default=1, choices=[0, 1],
+                        help="Average the inference embedding cache over train incidents only (1, strict) "
+                             "or over all incidents (0, flagged transductive ablation)")
+    parser.add_argument("--variant", type=str, default="", help="Variant tag recorded in meta.json")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    set_seed(args.seed)
 
     config = TVDiagConfig(
         data_dir=args.data_dir,
@@ -46,6 +70,8 @@ def main():
         weight_decay=args.weight_decay,
         feat_drop=args.feat_drop,
         aug_times=args.aug_times,
+        alert_embedding_dim=args.embedding_dim,
+        cache_train_only=bool(args.cache_train_only),
     )
 
     # Build dataset
@@ -81,6 +107,29 @@ def main():
     for k, v in results["fti"].items():
         logger.info(f"  FTI {k}: {v:.3%}")
     logger.info("=" * 60)
+
+    # Persist run metadata next to the checkpoint (variant lineage, seed, results)
+    meta = {
+        "alert_embedding_dim": config.alert_embedding_dim,
+        "data_dir": args.data_dir,
+        "variant": args.variant,
+        "seed": args.seed,
+        "cache_train_only": bool(args.cache_train_only),
+        "ft_num": config.ft_num,
+        "epochs": config.epochs,
+        "feat_drop": config.feat_drop,
+        "weight_decay": config.weight_decay,
+        "aug_times": config.aug_times,
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "results": {
+            "rcl": {k: float(v) for k, v in results["rcl"].items()},
+            "fti": {k: float(v) for k, v in results["fti"].items()},
+        },
+    }
+    meta_path = os.path.join(args.output_dir, "meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"Meta written to {meta_path}")
 
 
 if __name__ == "__main__":

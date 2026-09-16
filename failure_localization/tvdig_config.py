@@ -39,6 +39,9 @@ class TVDiagConfig:
         # Paths
         model_checkpoint_dir: str = "",
         data_dir: str = "",
+        # Embedding cache: average node embeddings over train incidents only
+        # (strict) or over all incidents (transductive — flagged ablation).
+        cache_train_only: bool = True,
     ):
         self.alert_embedding_dim = alert_embedding_dim
         self.graph_hidden_dim = graph_hidden_dim
@@ -63,6 +66,7 @@ class TVDiagConfig:
         self.modalities = modalities or ["metric", "trace", "log"]
         self.model_checkpoint_dir = model_checkpoint_dir
         self.data_dir = data_dir
+        self.cache_train_only = cache_train_only
 
     # ----- GAIA static topology -----
 

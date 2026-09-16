@@ -70,11 +70,51 @@ class TVDiagLocalizer(BaseLocalizer):
             self.config.ft_num = 10
             logger.info("  [CCF AIOps] Using 40-node CCF AIOps topology for TVDiag inference")
 
-        # Load model
-        self.model = MainModel(self.config).to(self.device)
+        self._load_model(model_dir)
+
+    @staticmethod
+    def _infer_ft_num(state_dict: dict):
+        """Infer ft_num from the FTI head output layer (typeClassifier final Linear)."""
+        last = None
+        for key, tensor in state_dict.items():
+            if key.startswith("typeClassifier.") and key.endswith(".weight"):
+                last = tensor
+        if last is not None:
+            return int(last.shape[0])
+        return None
+
+    @staticmethod
+    def _infer_embedding_dim(state_dict: dict):
+        """Infer alert_embedding_dim from the first SAGEConv fc weight.
+
+        SAGEConv.fc = Linear(in_dim*2, out_dim); the first layer of each
+        encoder is ``encoders.<modality>.layers.0.fc.weight`` with shape
+        (out, in_dim*2).
+        """
+        import re as _re
+        for key, tensor in state_dict.items():
+            if _re.search(r"encoders\.\w+\.layers\.0\.fc\.weight$", key):
+                return int(tensor.shape[1]) // 2
+        return None
+
+    def _load_model(self, model_dir: str):
+        """Load tvdig.pt, inferring embedding dim and ft_num from the checkpoint."""
         ckpt_path = os.path.join(model_dir, "tvdig.pt")
+        state = None
         if os.path.exists(ckpt_path):
             state = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+            inferred_dim = self._infer_embedding_dim(state["model"])
+            if inferred_dim and inferred_dim != self.config.alert_embedding_dim:
+                logger.info(f"  [TVDiag] Checkpoint embedding dim {inferred_dim} != default "
+                            f"{self.config.alert_embedding_dim}; adopting checkpoint dim")
+                self.config.alert_embedding_dim = inferred_dim
+            if not self._is_ccf_aiops:
+                inferred_ft = self._infer_ft_num(state["model"])
+                if inferred_ft and inferred_ft != self.config.ft_num:
+                    self.config.ft_num = inferred_ft
+
+        self.model = MainModel(self.config).to(self.device)
+        if state is not None:
             self.model.load_state_dict(state["model"])
             self.model.eval()
             logger.info(f"TVDiag model loaded from {ckpt_path}")

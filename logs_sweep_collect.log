@@ -1,0 +1,85 @@
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:441: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/hub.py:123: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:309: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(
+[cases] 305 logged cases (305 with tvdig rankings)
+[heads] rebuilding 305 case heads
+[heads] 25/305
+[heads] 50/305
+[heads] 75/305
+[heads] 100/305
+[heads] 125/305
+[heads] 150/305
+[heads] 175/305
+[heads] 200/305
+[heads] 225/305
+[heads] 0320b_anchorfix|0320b|0835 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|0848 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|0916 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|0937 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1033 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1052 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1108 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1125 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1152 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 250/305
+[heads] 0320b_anchorfix|0320b|1207 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1235 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1255 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1312 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1413 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1432 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1502 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1527 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1548 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1558 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1628 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1841 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1923 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1942 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2058 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2117 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2158 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2219 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2244 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|2322 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1747 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1650 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1400 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320b_anchorfix|0320b|1808 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320b_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|0828 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 275/305
+[heads] 0320c_anchorfix|0320c|0841 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|0934 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1013 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1043 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1104 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1137 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1244 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1310 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1329 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1356 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1413 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1434 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1505 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1530 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1545 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1632 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1650 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1727 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1754 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1839 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1856 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1912 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|2031 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|2105 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|2138 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 300/305
+[heads] 0320c_anchorfix|0320c|2211 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|2216 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|2333 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|1954 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] 0320c_anchorfix|0320c|0944 failed: FileNotFoundError: [Errno 2] No such file or directory: '0320c_anchorfix_microcause'
+[heads] done: 241 valid / 305

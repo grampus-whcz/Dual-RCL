@@ -91,7 +91,8 @@ def build_training_dataset(config: TVDiagConfig):
 
     # Build embedding cache for inference
     embedding_cache = _build_embedding_cache_from_pkls(
-        metric_embs, trace_embs, log_embs, nodes_json, labels_df
+        metric_embs, trace_embs, log_embs, nodes_json, labels_df,
+        train_only=getattr(config, "cache_train_only", True),
     )
 
     # Build graph datasets
@@ -263,50 +264,47 @@ def build_inference_graph_from_cache(
 #  Embedding cache
 # =====================================================================
 
-def _build_embedding_cache_from_pkls(metric_embs, trace_embs, log_embs, nodes_json, labels_df):
+def _build_embedding_cache_from_pkls(metric_embs, trace_embs, log_embs, nodes_json, labels_df,
+                                     train_only: bool = True):
     """Build a mapping from event strings to embedding vectors.
 
     Uses TVDiag's precomputed pkl embeddings. For each fault instance,
     maps the event strings (from raw JSON) to the corresponding
     node-level embedding vectors from the pkl.
+
+    Args:
+        train_only: if True (strict), average node embeddings over *train*
+            incidents only (label.csv data_type == 'train'). The historical
+            default averaged over all incidents, which leaks test-set event
+            documents into the inference cache; keep ``train_only=False``
+            only as a flagged transductive ablation.
     """
     cache = {"metric": {}, "trace": {}, "log": {}}
 
-    data_dir = None
-    for attr in ["data_dir"]:
-        pass  # Will be loaded separately
+    if train_only:
+        train_idx = set(labels_df.loc[labels_df["data_type"] == "train", "index"].astype(str))
+        logger.info(f"Embedding cache (train_only=True): averaging over {len(train_idx)} train incidents")
+    else:
+        train_idx = None
+        logger.info("Embedding cache (train_only=False): averaging over ALL incidents (transductive)")
 
     # The cache is built by averaging all embeddings for a given event pattern
-    # across all fault instances. This provides a generalizable lookup.
+    # across fault instances. This provides a generalizable lookup.
     # For simplicity, we store the average embedding per service node per modality.
     all_nodes = sorted(list({item for sublist in nodes_json.values() for item in sublist}))
 
-    for idx_str, node_embs in metric_embs.items():
-        nodes = nodes_json.get(idx_str, [])
-        for node_idx, node_name in enumerate(nodes):
-            if node_idx < len(node_embs):
-                key = node_name
-                if key not in cache["metric"]:
-                    cache["metric"][key] = []
-                cache["metric"][key].append(node_embs[node_idx])
+    def _collect(mod_embs, mod):
+        for idx_str, node_embs in mod_embs.items():
+            if train_idx is not None and idx_str not in train_idx:
+                continue
+            nodes = nodes_json.get(idx_str, [])
+            for node_idx, node_name in enumerate(nodes):
+                if node_idx < len(node_embs):
+                    cache[mod].setdefault(node_name, []).append(node_embs[node_idx])
 
-    for idx_str, node_embs in trace_embs.items():
-        nodes = nodes_json.get(idx_str, [])
-        for node_idx, node_name in enumerate(nodes):
-            if node_idx < len(node_embs):
-                key = node_name
-                if key not in cache["trace"]:
-                    cache["trace"][key] = []
-                cache["trace"][key].append(node_embs[node_idx])
-
-    for idx_str, node_embs in log_embs.items():
-        nodes = nodes_json.get(idx_str, [])
-        for node_idx, node_name in enumerate(nodes):
-            if node_idx < len(node_embs):
-                key = node_name
-                if key not in cache["log"]:
-                    cache["log"][key] = []
-                cache["log"][key].append(node_embs[node_idx])
+    _collect(metric_embs, "metric")
+    _collect(trace_embs, "trace")
+    _collect(log_embs, "log")
 
     # Average the collected embeddings
     for mod in cache:
