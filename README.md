@@ -1,501 +1,251 @@
-### LocaleXpert + Dual-Channel RCA + Multimodal Root Cause Localization
+# Dual-RCL: Anchor-Guided Confidence Voting over Dual Causal and Diverse Evidence for Microservice Root Cause Localization
 
-基于 LocaleXpert（文献 [171]）框架，集成了 **双通道根因分析（Dual-Channel RCA）**、**可配置多变量时间序列异常检测**、LLM 冲突解决模块、以及 **可配置多模态根因定位**。
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.9%2B-blue.svg" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg" alt="PyTorch 2.0+">
+  <img src="https://img.shields.io/badge/Task-Root%20Cause%20Localization-success.svg" alt="Task: Root Cause Localization">
+  <img src="https://img.shields.io/badge/Benchmarks-GAIA%20%7C%20CCF%20AIOps-orange.svg" alt="Benchmarks">
+</p>
 
-**异常检测**支持 7 种方法：**TranAD、USAD、OmniAnomaly、MAD_GAN、MSCRED、GDN、MTAD_GAT**，通过 `--anomaly-method` 切换。
+Official PyTorch implementation of **Dual-RCL** (**Dual**-prior causal arbitration and anchor-protected voting for **R**oot **C**ause **L**ocalization), a source-aware root cause localization (RCL) framework for distributed microservice systems.
 
-**根因定位**支持 2 种策略：**default**（原有 PCMCI+RandomWalk + MEPFL 单模态流水线）和 **tvdig**（TVDiag 多模态 GNN，文献 [167]），通过 `--rca-method` 切换。
+---
 
-### The file structure is as follows:
+## 📖 Overview
 
+Rapid **Root Cause Localization (RCL)** is critical for minimizing microservice downtime and Mean-Time-to-Repair (MTTR). However, cascading failure propagation across service dependencies frequently masks initiating root causes behind prominent downstream symptoms. Existing paradigms either infer metric causal graphs from single-metric tail spikes or condense multimodal telemetry into black-box service embeddings. Both suffer from **premature signal compression** and face three fundamental challenges:
+
+- **#C1. Single-Prior Blind Spots:** Univariate detectors flag marginal spikes, whereas multivariate models capture disrupted inter-metric correlations. Relying on a single anomaly prior misses complementary fault modes, while inferring separate causal graphs per detector confounds prior differences with topology variance.
+- **#C2. Score Attenuation Under Detector Disagreement:** Correlation-breaking faults trigger high multivariate reconstruction errors while single-metric scores remain near zero. Directly averaging both channels dilutes active anomaly signals and obscures whether the fault stems from a point spike or a correlation break.
+- **#C3. Scale Mismatch and Cascading Symptom Bias Across Localizers:** Metric causal graphs, distributed trace localizers, and multimodal models produce raw scores on incompatible numerical scales. Moreover, as faults cascade along call paths, downstream symptom hubs exhibit simultaneous metric and trace anomalies, accumulating collinear votes that override the true upstream root cause.
+
+To address these challenges, **Dual-RCL** delays evidence merging until each source produces an inspectable ranking, preserving diagnostic provenance and scenario tags across metric causal graphs, distributed traces, and multimodal localizers.
+
+---
+
+## 🏗️ Framework Architecture
+
+<p align="center">
+  <img src="assets/fig_framework.png" width="92%" alt="Dual-RCL Framework Overview">
+</p>
+
+As illustrated above, **Dual-RCL** operates in three progressive stages:
+
+1. **Stage 1 — Dual-Prior Causal Graph Scoring (`metric_anomaly.py`, `multivariate_anomaly.py`, `micro.py`):**
+   - **Univariate Channel ($\boldsymbol{\eta}^u$):** Models marginal distribution tails via Extreme Value Analysis (SPOT) and classifies temporal anomaly shapes using a lightweight 1D-CNN into interpretable patterns (e.g., transient spikes, level shifts, trends).
+   - **Multivariate Channel ($\boldsymbol{\eta}^m$):** Jointly reconstructs multi-metric time series (via **TranAD** by default, or configurable backbones such as USAD, OmniAnomaly, GDN, MTAD-GAT) and calibrates cumulative reconstruction errors to the univariate scale.
+   - **Shared Metric Causal Graph ($Q$):** Infers a lagged directed causal graph $\mathcal{G}=(\mathcal{V},\mathcal{E})$ via the Peter-Clark (PC) algorithm and projects both $\boldsymbol{\eta}^u$ and $\boldsymbol{\eta}^m$ onto a **shared structural Markov transition kernel** $Q$ via cause-oriented random walks, isolating prior differences from topological variance.
+
+2. **Stage 2 — Scenario-Aware Channel Arbitration (`anomaly_conflict_resolver.py`):**
+   - Compares top-$K$ candidate sets ($U_K, M_K$) from the univariate and multivariate causal walks and categorizes each incident into one of four diagnostic regimes:
+     - **Consistent (`|U_K ∩ M_K| ≥ 2`):** Preserves ranking order and records cross-channel endorsements.
+     - **Multivariate-Only:** Retains the correlation-disruption ranking as primary evidence without penalizing absent marginal spikes.
+     - **Univariate-Only:** Retains explicit marginal tail deviations while noting the unbacked correlation state.
+     - **Divergent Roots:** Blends priors with an overlap boost vector and re-executes the random walk on the shared kernel $Q$.
+   - Max-aggregates arbitrated metric scores per service to produce a unified metric ranking $\mathbf{r}^D$ ($\widetilde{\gamma}$) annotated with scenario tags.
+
+3. **Stage 3 — Anchor-Protected Multi-Source Voting (`failure_localization/`, `mepfl.py`, `run.py`):**
+   - Converts the multimodal anchor ranking ($\mathbf{r}^{MM}$), distributed trace ranking ($\mathbf{r}^T$), and unified metric causal ranking ($\mathbf{r}^D$) into scale-free **Reciprocal Rank Fusion (RRF)** votes reinforced by a cross-source consensus bonus.
+   - Applies **Multivariate-Only Top-1 Protection** (topology-informed collinearity suppression): under correlation-only disruptions, confirmation sources reorder candidates below rank 1 (`#2–#5`) to expand recall while structurally protecting the top-1 anchor candidate against downstream symptom-hub overrides.
+   - _(Downstream Explanation Formatter)_: An offline LLM formatter consumes the final ranked services and preserved scenario/provenance tags to generate human-readable incident triage reports for SRE operators without altering algorithmic rankings.
+
+---
+
+## 📊 Main Experimental Results
+
+**Dual-RCL** is evaluated on two public microservice benchmarks—**GAIA** (in-distribution deployment) and **CCF AIOps** (cross-cluster deployment shift)—achieving state-of-the-art top-rank accuracy (`40.8%` AC@1 and `85.3%` AC@3 on GAIA) while preserving peak top-1 precision (`26.1%` AC@1) and expanding top-$k$ recall (`34.4%` AC@3, `39.4%` AC@5) under cross-cluster shifts.
+
+<p align="center">
+  <img src="assets/fig_main_results_topk_curve.png" width="78%" alt="Top-k Accuracy Comparison on GAIA and CCF AIOps">
+</p>
+
+| Benchmark     | Method              | Paradigm                                        | AC@1 (%) | AC@3 (%) | AC@5 (%) | Avg@5 (%) |
+| :------------ | :------------------ | :---------------------------------------------- | :------: | :------: | :------: | :-------: |
+| **GAIA**      | LocaleXpert         | Univariate Causal + Trace                       |   29.0   |   78.2   |   88.7   |   65.3    |
+| **GAIA**      | DualChannel         | Dual-Prior Causal Arbitration                   |   31.5   |   81.5   |   91.1   |   68.0    |
+| **GAIA**      | TVDiag              | Multimodal GNN (Metric + Trace + Log)           |   32.9   |   81.5   | **98.4** |   70.9    |
+| **GAIA**      | **Dual-RCL (Ours)** | **Dual-Prior Causal + Anchor-Protected Voting** | **40.8** | **85.3** |   92.3   | **72.8**  |
+| **CCF AIOps** | LocaleXpert         | Univariate Causal + Trace                       |   20.6   |   24.3   |   27.1   |   24.0    |
+| **CCF AIOps** | DualChannel         | Dual-Prior Causal Arbitration                   |   22.2   |   25.2   |   28.0   |   25.1    |
+| **CCF AIOps** | TVDiag              | Multimodal GNN (Metric + Trace + Log)           | **26.1** |   32.1   |   37.6   |   31.9    |
+| **CCF AIOps** | **Dual-RCL (Ours)** | **Dual-Prior Causal + Anchor-Protected Voting** | **26.1** | **34.4** | **39.4** | **33.3**  |
+
+---
+
+## 📂 Repository Structure
+
+```text
+Dual-RCA/
+├── assets/                           # Framework diagrams and result figures
+│   ├── fig_framework.png             # Overview of the 3-stage Dual-RCL architecture
+│   ├── fig_motivating_example.png    # Motivating example of connection-pool exhaustion
+│   └── fig_main_results_topk_curve.png
+├── anomaly_detection/                # Stage 1: Configurable multivariate anomaly detection package
+│   ├── __init__.py                   # Package entrypoint (create_detector, AVAILABLE_METHODS)
+│   ├── base_detector.py              # Abstract base class BaseMultivariateDetector
+│   ├── detector_factory.py           # Lazy-loading registry & detector factory
+│   ├── shared.py                     # Sliding windows, metric-to-service mapping & utilities
+│   ├── tranad_detector.py            # TranAD (VLDB 2022, self-conditioning Transformer, default)
+│   ├── usad_detector.py              # USAD (KDD 2020, adversarial dual autoencoders)
+│   ├── omnianomaly_detector.py       # OmniAnomaly (KDD 2019, stochastic RNN / GRU-VAE)
+│   ├── mad_gan_detector.py           # MAD-GAN (ICANN 2019, LSTM-GAN)
+│   ├── mscred_detector.py            # MSCRED (AAAI 2019, multi-scale ConvLSTM)
+│   ├── gdn_detector.py               # GDN (AAAI 2021, Graph Deviation Network, pure PyTorch)
+│   └── mtad_gat_detector.py          # MTAD-GAT (ICDM 2020, dual feature/temporal GAT + GRU)
+├── failure_localization/             # Stage 3: Multimodal anchor & configurable RCL backbones
+│   ├── __init__.py                   # Package entrypoint (create_localizer, AVAILABLE_METHODS)
+│   ├── base_localizer.py             # LocalizationResult dataclass & BaseLocalizer interface
+│   ├── default_localizer.py          # Causal + Trace localization pipeline wrapper
+│   ├── tvdig_localizer.py            # Multimodal GraphSAGE anchor (TVDiag) inference wrapper
+│   ├── tvdig_model.py                # Pure PyTorch GraphSAGE multimodal backbone & contrastive loss
+│   ├── tvdig_data.py                 # Multimodal feature adapter & offline embedding cache
+│   ├── tvdig_config.py               # Model hyperparameters and service topology definitions
+│   └── train_tvdig.py                # Standalone offline trainer for the multimodal anchor
+├── metric_anomaly.py                 # Stage 1: Univariate SPOT tail detector + 1D-CNN pattern classifier
+├── multivariate_anomaly.py           # Stage 1: Multivariate reconstruction prior (η^m) dispatcher
+├── micro.py                          # Stage 1: Shared PC causal graph inference & Markov random walk (Q)
+├── anomaly_conflict_resolver.py      # Stage 2: Scenario-aware dual-channel arbitration (4 regimes)
+├── trace_anomaly.py                  # Stage 3: Distributed trace anomaly extraction
+├── mepfl.py                          # Stage 3: Trace-based service fault localizer (r^T)
+├── run.py                            # Main Dual-RCL pipeline & multi-source voting entry for GAIA
+├── run_22.py                         # Main Dual-RCL pipeline entry for CCF AIOps Challenge
+├── sweep_fusion_weights_ccf.py       # Hyperparameter sensitivity analysis (w_D, w_T, alpha)
+├── evaluation/                       # Evaluation suite (AC@k, Avg@k, latency, and report quality)
+├── CompanyConfig/                    # Prompt templates for downstream SRE diagnostic explanation
+├── data/                             # Dataset preprocessing scripts for GAIA and CCF AIOps
+└── requirements.txt                  # Python dependencies
 ```
-├── /CompanyConfig/
-│  └──/SelfIntroduction/
-├── /mepfl_model/
-├── /data/
-├── /anomaly_detection/               # [新增] 可配置多变量异常检测包
-│   ├── __init__.py                   #   包入口，导出 create_detector / AVAILABLE_METHODS
-│   ├── base_detector.py              #   抽象基类 BaseMultivariateDetector
-│   ├── shared.py                     #   共享工具（滑动窗口、指标映射、描述生成）
-│   ├── detector_factory.py           #   工厂函数 + 懒加载注册表
-│   ├── tranad_detector.py            #   TranAD (VLDB 2022, Transformer)
-│   ├── usad_detector.py              #   USAD (KDD 2020, 双自编码器对抗训练)
-│   ├── omnianomaly_detector.py       #   OmniAnomaly (KDD 2019, GRU + VAE)
-│   ├── mad_gan_detector.py           #   MAD_GAN (ICANN 2019, GAN)
-│   ├── mscred_detector.py            #   MSCRED (AAAI 2019, ConvLSTM)
-│   ├── gdn_detector.py              #   GDN (AAAI 2021, 图注意力, 纯 PyTorch)
-│   └── mtad_gat_detector.py          #   MTAD_GAT (ICDM 2020, 图注意力 + GRU)
-├── /failure_localization/            # [新增] 可配置根因定位包
-│   ├── __init__.py                   #   包入口，导出 create_localizer / AVAILABLE_METHODS
-│   ├── base_localizer.py             #   LocalizationResult 数据类 + BaseLocalizer 抽象基类
-│   ├── default_localizer.py          #   Default 策略（封装原有 PCMCI+RW + MEPFL 流水线）
-│   ├── tvdig_localizer.py            #   TVDiag 策略（多模态 GNN 推理封装）
-│   ├── tvdig_config.py               #   TVDiag 配置（模型维度、训练参数、GAIA 拓扑）
-│   ├── tvdig_model.py                #   纯 PyTorch TVDiag 模型（SAGEConv、MainModel、损失函数、训练器）
-│   ├── tvdig_data.py                 #   数据适配器（离线训练 + 在线推理特征构建 + 嵌入缓存）
-│   ├── localizer_factory.py          #   工厂函数（按名称创建定位器）
-│   └── train_tvdig.py                #   TVDiag 独立训练脚本
-├── metric_anomaly.py                 # 单变量异常检测 (CNN 模式分类 + SPOT)
-├── multivariate_anomaly.py           # 多变量异常检测入口（委托工厂调度）
-├── anomaly_conflict_resolver.py      # LLM 冲突仲裁模块
-├── trace_anomaly.py
-├── mepfl.py
-├── micro.py                          # 因果分析 (PCMCI + Random Walk)
-├── run.py                            # 主入口 (含可配置异常检测 + 根因定位 + 冲突解决)
-├── run_22.py
-├── tvdig_checkpoint/                 # [新增] TVDiag 训练产出
-│   ├── tvdig.pt                      #   模型权重
-│   └── embedding_cache.pkl           #   事件→嵌入向量缓存
-├── Multivariate_Anomaly_Integration_Report.md  # TranAD 集成方法与测试报告
-```
 
-- `SelfIntroduction`: Prompt for each Agent and solution paths.
-- `mepfl_model`: Code for training the trace failure localization model.
-  - `mepfl_model\main.py` : Main train program
-  - `mepfl_model\data` : Data process code
-- `data`: Code for data process.
-- `metric_anomaly.py`: Code for metrics description generate, along with the code for training the metric classification model.
-- `anomaly_detection/`: **[新增]** 可配置多变量异常检测包。所有检测器遵循统一的 `train()` / `detect()` 接口，通过工厂函数 `create_detector(method, n_features)` 按名称创建。全部为纯 PyTorch 实现，无外部依赖（GDN/MTAD_GAT 用纯 PyTorch 重写了图注意力，无需 DGL）。
-- `failure_localization/`: **[新增]** 可配置多模态根因定位包。所有定位器遵循统一的 `localize()` → `LocalizationResult` 接口。支持：
-  - `default`：封装原有单模态流水线（PCMCI+RandomWalk + MEPFL），行为完全不变。
-  - `tvdig`：基于 TVDiag（文献 [167]）的多模态 GNN 方法，在服务依赖图上联合分析 metric+trace+log 三种模态数据，进行端到端的根因服务定位和故障类型分类。纯 PyTorch 实现（重写了 GraphSAGE 卷积），无需 DGL。
-- `multivariate_anomaly.py`: 多变量异常检测入口。通过 `method` 参数选择检测方法（默认 `tranad`），委托 `anomaly_detection` 包执行。**向后兼容**：不传 `method` 时行为与之前完全一致。
-- `anomaly_conflict_resolver.py`: LLM 冲突仲裁模块。基于双通道 RCA 排名，当多变量和单变量根因分析结果不一致时，自动分类冲突场景（4种），调用 LLM 进行对比分析，生成统一的异常报告。
-- `trace_anomaly.py`: Code for traces description generate.
-- `mepfl.py`: Code for online trace failure localization.
-- `micro.py`: 因果分析模块 (PCMCI 因果推断 + Random Walk)，作为根因定位的最终裁决器。
-- `run.py`: LocaleXpert in GAIA Dataset (含双通道RCA + 可配置异常检测 + 可配置根因定位 + 冲突解决)
-- `run_22.py`: LocaleXpert in AIOps Challenge Dataset
-- `tvdig_checkpoint/`: TVDiag 模型训练产出，包含模型权重和事件嵌入缓存。
+---
 
-### Install
+## ⚙️ Installation
 
-1. **Set Up Python Environment:** Use the existing conda environment:
+1. **Create or activate the Python environment (Python 3.9+ / PyTorch 2.0+):**
 
-   ```
-   conda activate /root/shared-nvme/.conda/envs/LocaleXpert_env
+   ```bash
+   conda create -n dual_rcl python=3.9 -y
+   conda activate dual_rcl
    ```
 
-2. **Install Dependencies:** Install the necessary dependencies by running:
+2. **Install dependencies:**
 
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 
-3. **Run (default pipeline):** Replace [description_of_task] with the task description and [project_name] with the AIOps case name:
-
-   ```
-   python run.py --task "[description_of_task]" --name "[project_name]"
-   ```
-
-4. **Run (specify anomaly detection method):**
-
-   ```
-   python run.py --task "[description_of_task]" --name "[project_name]" --anomaly-method usad
-   python run.py --task "[description_of_task]" --name "[project_name]" --anomaly-method gdn --anomaly-epochs 10
-   ```
-
-5. **Run (TVDiag multimodal root cause localization):**
-
-   ```
-   python run.py --task "[description_of_task]" --name "[project_name]" \
-       --rca-method tvdig --tvdig-model ./tvdig_checkpoint
-   ```
-
-6. **Run (skip multivariate detection, original pipeline):**
-
-   ```
-   python run.py --task "[description_of_task]" --name "[project_name]" --skip-multivariate
-   ```
-
-7. **Train TVDiag model (offline, on GAIA historical data):**
-
-   ```
-   python -m failure_localization.train_tvdig \
-       --data-dir /root/shared-nvme/work/code/RCA/2026/TVDiag/data/gaia \
-       --output-dir ./tvdig_checkpoint --epochs 500
-   ```
-
-### Command-line Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--task` | (required) | Task description with datetime |
-| `--name` | `DefaultName` | Case name for report output |
-| `--model` | `deepseek-r1-0528` | LLM model name. API models: `deepseek-r1-0528`, `GPT_4` 等。本地 Ollama: `ollama-qwen3-14b`, `ollama-qwen3-8b` |
-| `--ollama-url` | `http://localhost:11434/v1` | Ollama API 地址（仅当 `--model` 以 `ollama-` 开头时生效） |
-| `--anomaly-method` | `tranad` | 多变量异常检测方法，可选: `tranad`, `usad`, `omnianomaly`, `mad_gan`, `mscred`, `gdn`, `mtad_gat` |
-| `--anomaly-epochs` | `5` | 多变量异常检测训练轮数 |
-| `--anomaly-lr` | (model-specific) | 学习率，不指定则使用各模型默认值 |
-| `--anomaly-window` | (model-specific) | 滑动窗口大小，不指定则使用各模型默认值 |
-| `--rca-method` | `default` | 根因定位方法: `default`（PCMCI+RW + MEPFL 单模态）或 `tvdig`（TVDiag 多模态 GNN） |
-| `--tvdig-model` | `None` | TVDiag 模型检查点目录（`--rca-method=tvdig` 时必需） |
-| `--skip-multivariate` | `False` | Skip multivariate detection (original univariate-only pipeline) |
-
-### Supported Anomaly Detection Methods
-
-| Method | 来源 | 核心架构 | 默认窗口 | 默认学习率 |
-|--------|------|----------|----------|------------|
-| `tranad` | VLDB 2022 | 双阶段自条件 Transformer | 10 | 0.001 |
-| `usad` | KDD 2020 | 双自编码器 + 对抗训练 | 5 | 0.0001 |
-| `omnianomaly` | KDD 2019 | GRU + VAE (重参数化) | 1 | 0.002 |
-| `mad_gan` | ICANN 2019 | GAN (生成器 + 判别器) | 5 | 0.0001 |
-| `mscred` | AAAI 2019 | ConvLSTM 编码器 + 反卷积解码器 | (auto) | 0.0001 |
-| `gdn` | AAAI 2021 | 多头图注意力网络 | 5 | 0.0001 |
-| `mtad_gat` | ICDM 2020 | 双图注意力 (特征+时间) + GRU | (auto) | 0.0001 |
-
-### Supported Root Cause Localization Methods
-
-| Method | 来源 | 核心架构 | 输入模态 | 说明 |
-|--------|------|----------|----------|------|
-| `default` | LocaleXpert [171] | PCMCI 因果推断 + Random Walk (指标) / RF+MLP (追踪) | 单模态分别处理 | 原有流水线，行为不变 |
-| `tvdig` | TVDiag [167] | 多模态 GraphSAGE + 监督对比学习 + 跨模态关联 | Metric + Trace + Log 联合分析 | 在服务依赖图上融合三模态，端到端根因定位 + 故障分类 |
-
-### TVDiag Training Results (GAIA Dataset)
-
-TVDiag 模型在 GAIA 数据集上的离线训练结果（100 epochs，纯 PyTorch 实现，无 DGL 依赖）：
-
-| 指标 | 值 |
-|------|-----|
-| **RCL HR@1** | 72.4% |
-| **RCL HR@3** | 89.4% |
-| **RCL HR@5** | 93.8% |
-| **RCL MRR@3** | 80.1% |
-| **FTI Precision** | 89.4% |
-| **FTI Recall** | 90.6% |
-| **FTI F1** | 90.0% |
-
-### Key Design Decisions
-
-1. **纯 PyTorch 实现**：TVDiag 的 GraphSAGE 卷积使用 scatter mean + Linear 重写，无 DGL 依赖（DGL 与当前 torch 2.12 不兼容）。
-2. **策略模式 (Strategy Pattern)**：`BaseLocalizer` 抽象基类定义 `localize() → LocalizationResult` 接口，由 `DefaultLocalizer` 和 `TVDiagLocalizer` 分别实现。
-3. **嵌入缓存 (Embedding Cache)**：离线训练时构建事件→向量映射表，保存在检查点旁，用于在线推理时快速查找。
-4. **向后兼容**：`--rca-method default`（或不传该参数）运行原有流水线，行为完全不变。
+   > **Note:** All graph neural network modules in `anomaly_detection/` (`GDN`, `MTAD-GAT`) and `failure_localization/` (`GraphSAGE` multimodal anchor) are implemented in **pure PyTorch** without requiring `DGL` or complex CUDA-specific graph compilation.
 
 ---
 
-### 双通道 RCA 决策框架（Dual-Channel RCA）
+## 🚀 Quick Start & Usage
 
-#### 背景：为什么需要双通道？
+### 1. Run Dual-RCL (Full Pipeline)
 
-根据文献分析与讨论，面对单变量和多变量异常检测及根因分析结果冲突时，不应绝对化地只信其中一个。优先级上应以"多变量联合检测"的结果为基座，以"单变量检测"为补充解释，并最终交由"因果推理"进行裁决。
-
-**一、为什么优先相信"多变量联合检测"？**
-
-| 理由 | 说明 |
-|------|------|
-| **避免"相关性破坏"导致的漏报** | 如文献 [174] 所述，多变量时间序列的核心特征是变量间存在相互依赖。很多微服务故障表现为"相关性破坏"——即单个指标看都在正常阈值内，但它们之间的联动关系打破了常规。此时单变量检测会认为一切正常，而多变量检测能捕捉到这种隐秘的异常 |
-| **契合微服务故障的级联传播特性** | 约 60% 以上的微服务故障是跨服务、跨指标的级联影响。文献 [173] 强调，单维方法"易受噪声和隐式依赖影响，限制了根因定位的准确性和鲁棒性" |
-| **抗噪声能力更强** | 单变量检测极易受局部毛刺干扰而误报；多变量联合检测综合了多个维度的信息，能够过滤掉仅存在于单一指标上的随机噪声 |
-
-**二、单变量检测的价值何在？**
-
-| 价值 | 说明 |
-|------|------|
-| **极端显式异常的快速定位** | 当故障是单点故障（如某服务 OOM），单变量检测能最直接地锁定"刺眼"的异常指标，而多变量模型可能因降维或平滑作用削弱了该信号的显著性 |
-| **提供根因归因的"候选集"** | 文献 [57] 提到多变量检测到异常后，需要"由低重构概率单变量解释"。即：多变量负责"定性（是否异常）"，单变量负责"归因（哪个指标异常）" |
-
-#### 架构对比：原流程 vs 双通道流程
-
-**原流程（旧版）：**
-```
-Phase 4:  4A(单变量检测) → 4C(PCMCI+SPOT eta) → 4B(多变量检测)
-Phase 5:  单次随机游走（仅用 SPOT eta）→ baseline 排名
-Phase 6:  LLM 比较检测结果 → 可能用不同 eta 重跑随机游走
-```
-
-**改进后（双通道 RCA）：**
-```
-Phase 4:  4A(单变量检测+SPOT eta) → 4B(多变量检测+multi eta) → 4C(PCMCI因果图)
-Phase 5:  双通道 RCA:
-            5A: SPOT eta → 随机游走 → 单变量根因排名
-            5B: multi eta → 随机游走 → 多变量根因排名
-Phase 6:  LLM 比较两个完整根因排名 → 冲突场景判定 → 因果推理裁决
-```
-
-核心区别：原流程只有**一次**随机游走，多变量检测结果仅作为"是否需要调整 eta"的参考。改进后，两种检测方法各自驱动一次**完整的**随机游走，产出独立的根因排名，然后通过 LLM 比较两个排名进行裁决。
-
-#### 完整流水线架构
-
-```
-                     Phase 4: 异常检测
-                 ┌─────────────────────────┐
-                 │  4A: 单变量检测 (CNN+SPOT) │──── SPOT eta
-                 │  4B: 多变量检测 (TranAD等) │──── multi eta
-                 │  4C: 因果发现 (PCMCI)      │──── 因果图 + Q矩阵
-                 └─────────────────────────┘
-                              │
-                     Phase 5: 双通道 RCA
-                 ┌─────────────────────────┐
-                 │  5A: SPOT eta + 随机游走  │──→ 单变量根因排名
-                 │  5B: multi eta + 随机游走 │──→ 多变量根因排名
-                 └─────────────────────────┘
-                              │
-              Phase 6: LLM 冲突解决 + 因果裁决
-                 ┌─────────────────────────┐
-                 │  LLM 比较两个根因排名      │
-                 │  ↓ 分类冲突场景            │
-                 │  一致 → 直接使用            │
-                 │  场景1 → 信任多变量RCA     │
-                 │  场景2 → 信任多变量+补充   │
-                 │  场景3 → 合并+因果裁决     │
-                 └─────────────────────────┘
-                              │
-                     Phase 7-9: 下游推理
-              ┌──────────────────────────────┐
-              │  Phase 7: 知识注入 PhaseConfig  │
-              │  Phase 8: 日志分析              │
-              │  Phase 9: ChatChain LLM 推理    │
-              └──────────────────────────────┘
-```
-
-#### Phase 6 冲突场景决策表
-
-| 场景 | 表现 | 应该信任谁 | 后续动作 |
-|------|------|-----------|---------|
-| **一致** | 两通道根因排名吻合 | 合并使用 | 排名可靠，直接进入下游 |
-| **场景1** | 多变量异常，单变量正常 | 信任多变量 RCA | 典型"相关性破坏"（变量间依赖关系打破，但单个指标都在阈值内），使用多变量 RCA 排名 |
-| **场景2** | 单变量异常，多变量正常 | 信任多变量 | 单指标异常大概率是噪声，系统整体正常。但结合业务逻辑判断是否为关键致命指标（如错误率飙升），若是则注入为先验知识 |
-| **场景3** | 均报异常，但指向不同根因 | 都不尽信，交给因果推理 | 合并两通道候选集，用平均 eta × boost 向量重跑随机游走。PCMCI 因果图根据故障传播路径和时间滞后顺序倒推源头——**因果推理是最终裁决者** |
-
-#### 终极原则：让"因果推理"做最终裁决
-
-如文献 [112] 和 [173] 所指出的：**异常检测只是第一步，根因定位必须依靠因果推理**。当单变量和多变量检测给出不同结论时：
-
-1. **构建统一输入**：如文献 [141] 和 [171] 所述，将单变量异常分数和多变量异常特征统一为多模态事件表示
-2. **因果图筛选**：利用 PCMCI 的时序因果随机游走，根据故障的"传播路径"和"时间滞后顺序"来倒推源头
-   - 如果单变量检测到的 A 指标是因，多变量归因的 B 指标是果，RCA 会沿着因果链把 A 定位为根因
-   - 如果单变量检测到的 A 只是表象，而多变量检测捕捉到的 B 才是触发 A 的隐式源头，RCA 也会通过拓扑纠偏定位到 B
-
-这也印证了文献 [171] LocaleXpert 的核心思想：**不盲信单一模态，而是让多模态专家在推理层面交叉验证**。
-
----
-
-### 增强异常描述生成与 LLM 知识注入（Enhanced Anomaly Description + Knowledge Injection）
-
-#### 背景
-
-文献 [171] 消融实验表明，异常描述模块对最终推理质量影响最大（w/o AD 导致推理质量显著下降）。同时，多变量检测结果和 PCMCI 因果路径虽已计算出来，但未以自然语言形式传递给 LLM agent，限制了 LLM 推理的深度和准确性。
-
-本次增强解决了两个问题：
-1. **异常描述质量不足**：原 `generate_metric_describe()` 仅做简单的字符串拼接，缺少统计特征和模式化描述
-2. **LLM 知识注入不完整**：Phase 7 注入的知识仅包含异常描述文本和根因排名，缺少跨指标相关性、因果传播路径和双通道一致性分析
-
-#### 优化 1：增强异常描述生成
-
-**文件：** `metric_anomaly.py` — 新增 `enhance_metric_describe()` 及辅助函数
-
-**实现内容：**
-
-| 功能 | 说明 |
-|------|------|
-| **11 类模式模板** | 每种异常模式有专门的描述模板：spike 强调突然性、level shift 强调持续性和变化幅度、trend 强调方向和增长率、fluctuations 强调波动范围 |
-| **统计特征提取** | 自动计算均值、标准差、峰值、谷值、变化幅度百分比（Δ%）、持续时长、σ 偏离度 |
-| **严重等级分类** | mild / moderate / severe / critical 四级（基于 σ 偏离度） |
-| **跨指标关联提示** | 同一服务多个指标同时异常时，自动添加 `[Cross-Metric Alert]` 提示 |
-
-**输出对比示例：**
-
-原版输出：
-```
-The cpu_usage metric for service mobservice1 is abnormal, with anomaly pattern of 
-Single spike, started at 2021-07-01 11:50:00, ended at 2021-07-01 11:51:00, reach 
-0.9, increase from the previous 0.1, anomaly score is 4.5.
-```
-
-增强版输出：
-```
-The cpu_usage metric for service mobservice1 exhibited a sudden spike reaching 0.9000, 
-which is approximately 9.0σ above the historical mean of 0.1000. The spike occurred 
-around 2021-07-01 11:50:00, rising sharply from 0.1000 and returning to normal levels 
-within approximately 1 minutes. Severity: [SEVERE].
-```
-
-**11 类模式的差异化描述策略：**
-
-| 模式 | 描述侧重点 |
-|------|-----------|
-| Single spike / Single dip | 突发性、峰值/谷值、σ 偏离度、恢复时间 |
-| Multiple spikes / Multiple dips | 重复次数、峰值、暗示负载突发或资源争用 |
-| Level shift up / Level shift down | 前后均值对比、变化百分比、持续性 |
-| Transient level shift up / down | 临时性变化、部分恢复、持续时间 |
-| Steady increase / Steady decrease | 趋势方向、增长率、时间跨度 |
-| Fluctuations | 波动范围、变异系数、稳定性分析 |
-
-#### 优化 2：多变量检测结果 + 因果路径注入 LLM 推理
-
-**文件：** `run.py` — 新增 3 个知识生成函数 + Phase 7 注入增强
-
-**新增函数：**
-
-| 函数 | 作用 |
-|------|------|
-| `generate_multivariate_knowledge(multi_results, data_head)` | 将多变量检测结果转为跨指标相关性自然语言描述，包含系统整体异常状态、Top-N 异常指标排名、各指标重建误差分数、受影响服务列表 |
-| `generate_causal_knowledge(causal_graph, data_head, gamma)` | 将 PCMCI 因果图转为传播路径描述（A → B → C 格式），包含因果链接数量、Top-N 最具因果影响力的指标（γ 分数）、关键传播路径 |
-| `generate_concordance_report(multi_results, root_metric_uni, root_metric_multi)` | 生成双通道一致性分析报告：单变量和多变量通道是否指向同一根因，一致时提升置信度，分歧时提示可能存在相关性破坏 |
-
-**Phase 7 注入增强：**
-
-注入前（MetricAnalysis prompt）：
-```
-Knowledge:
-Anomaly description:{异常描述文本}
-{根因指标排名}
-```
-
-注入后（MetricAnalysis prompt）：
-```
-Knowledge:
-Anomaly description:{增强版异常描述，含统计特征和严重等级}
-{根因指标排名}
-
-[Cross-Metric Correlation Analysis]:
-{多变量检测结果描述 — 系统异常状态、跨指标相关性、重建误差排名、受影响服务}
-```
-
-注入前（RootCauseAnalysis prompt）：
-```
-Knowledge: {根因指标排名}
-Top5 root cause:{服务排名}
-```
-
-注入后（RootCauseAnalysis prompt）：
-```
-Knowledge: {根因指标排名}
-Top5 root cause services:{服务排名}
-
-[Causal Propagation Paths]:
-{PCMCI 因果图的关键传播路径，Top-N 因果影响力指标，如:
-  (1) mobservice1_cpu → redisservice2_latency
-  (2) mobservice1_cpu → webservice1_response
-  (3) redisservice2_latency → webservice1_response}
-
-[Evidence Concordance]:
-{双通道一致性分析 — 单变量和多变量通道是否指向同一根因，
- 一致时"converge on the same top root cause metric"，
- 分歧时"divergence suggests correlated metric disruptions"}
-```
-
-**向后兼容：** 无多变量检测结果时（`multi_results is None`），自动退化为原有注入方式，不影响单通道流水线的行为。
-
-#### 相关文件
-
-| 文件 | 改动类型 | 说明 |
-|------|----------|------|
-| `metric_anomaly.py` | 新增函数 | `enhance_metric_describe()`、`_generate_pattern_description()`、`_classify_severity()` 等 |
-| `run.py` Phase 4A | 修改调用 | 调用 `enhance_metric_describe()` 替代原 `generate_metric_describe()` |
-| `run.py` 新增函数 | 新增 | `generate_multivariate_knowledge()`、`generate_causal_knowledge()`、`generate_concordance_report()` |
-| `run.py` Phase 7 | 修改注入 | 增强 MetricAnalysis 和 RootCauseAnalysis 的 prompt 内容 |
-
----
-
-### 评估（Evaluation）
-
-评估模块实现论文 [171] 的 Tables II–VI 全部指标。所有命令需在项目根目录下执行：
+To execute **Dual-RCL** with dual-prior causal scoring (`SPOT + TranAD` on shared PC kernel $Q$), scenario-aware channel arbitration, and anchor-protected multi-source voting:
 
 ```bash
-cd /root/shared-nvme/work/code/RCA/2026/SoC-RCA
+python run.py \
+    --task "[incident_datetime_and_description]" \
+    --name "[case_name]" \
+    --anomaly-method tranad \
+    --rca-method tvdig \
+    --tvdig-model ./tvdig_checkpoint
 ```
 
-#### 指标说明
+### 2. Run Ablation Variants
 
-| 指标 | 对应论文表格 | 含义 | 是否需要 LLM 调用 |
-|------|-------------|------|-------------------|
-| A@1, A@3, A@5 | Table II | Top-k 根因定位准确率 | 否 |
-| BLEU-4 | Tables III–V | 4-gram 精度（推理文本质量） | 否（需参考文本） |
-| ROUGE-L | Tables III–V | 最长公共子序列 F1（推理文本质量） | 否（需参考文本） |
-| G-sim | Tables III–V | LLM-as-Judge 语义相似度 | 是 |
-| W-rate | Tables III–V | LLM 投票胜率（多方法对比） | 是 |
-| Latency | Table VI | 端到端延迟 | 否 |
+- **DualChannel Only (Stage 1 + Stage 2 causal arbitration + trace, without multimodal anchor):**
 
-#### ① 基本指标（A@k + 延迟）—— 秒级完成
+  ```bash
+  python run.py \
+      --task "[incident_datetime_and_description]" \
+      --name "[case_name]" \
+      --anomaly-method tranad \
+      --rca-method default
+  ```
+
+- **Univariate Causal Baseline (`LocaleXpert`, skipping multivariate prior $\boldsymbol{\eta}^m$):**
+
+  ```bash
+  python run.py \
+      --task "[incident_datetime_and_description]" \
+      --name "[case_name]" \
+      --skip-multivariate
+  ```
+
+- **Switch Multivariate Anomaly Detector Backbone:**
+
+  ```bash
+  # Choose from: tranad, usad, omnianomaly, mad_gan, mscred, gdn, mtad_gat
+  python run.py \
+      --task "[incident_datetime_and_description]" \
+      --name "[case_name]" \
+      --anomaly-method gdn \
+      --anomaly-epochs 10
+  ```
+
+### 3. Train the Multimodal Anchor (`r^{MM}`) Offline
 
 ```bash
-# DualChannel
+python -m failure_localization.train_tvdig \
+    --data-dir ./Datasets/GAIA \
+    --output-dir ./tvdig_checkpoint \
+    --epochs 500
+```
+
+### 4. Evaluate Localization Accuracy (`AC@1`, `AC@3`, `AC@5`) & Hyperparameter Sensitivity
+
+```bash
+# Evaluate top-k hit accuracy (AC@1, AC@3, AC@5) and inference latency
 python -m evaluation.run_evaluation \
     --log experiments_dualchannel.log \
     --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/
 
-# LocaleXpert
-python -m evaluation.run_evaluation \
-    --log experiments_localexpert.log \
-    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/
+# Run hyperparameter sensitivity sweep (w_D and consensus bonus alpha)
+python sweep_fusion_weights_ccf.py
 ```
 
-#### ② 加 BLEU-4 / ROUGE-L（使用已有参考文本）—— 秒级完成
+---
 
-```bash
-# DualChannel（参考文本已预生成）
-python -m evaluation.run_evaluation \
-    --log experiments_dualchannel.log \
-    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
-    --ref-input evaluation/reference_texts_dualchannel
+## 🔧 Command-Line Arguments
 
-# LocaleXpert（首次需生成参考文本，耗时约 60-90 分钟）
-python -m evaluation.run_evaluation \
-    --log experiments_localexpert.log \
-    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
-    --generate-references \
-    --ref-model glm-4.7 \
-    --ref-output evaluation/reference_texts_localexpert
+| Argument              | Default                     | Description                                                                                                              |
+| :-------------------- | :-------------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `--task`              | _(required)_                | Incident timestamp and task prompt                                                                                       |
+| `--name`              | `DefaultName`               | Experiment or case identifier for output logs                                                                            |
+| `--anomaly-method`    | `tranad`                    | Multivariate detector for $\boldsymbol{\eta}^m$: `tranad`, `usad`, `omnianomaly`, `mad_gan`, `mscred`, `gdn`, `mtad_gat` |
+| `--anomaly-epochs`    | `5`                         | Online window adaptation / training epochs for multivariate detector                                                     |
+| `--anomaly-lr`        | _(model-specific)_          | Learning rate override for multivariate detector                                                                         |
+| `--anomaly-window`    | _(model-specific)_          | Sliding window length override                                                                                           |
+| `--rca-method`        | `default`                   | Localization mode: `default` (DualChannel causal + trace) or `tvdig` (full Dual-RCL with multimodal anchor)              |
+| `--tvdig-model`       | `None`                      | Checkpoint directory for the pre-trained multimodal anchor (`./tvdig_checkpoint`)                                        |
+| `--skip-multivariate` | `False`                     | Disable multivariate channel $\boldsymbol{\eta}^m$ (reverts to single-prior univariate walk)                             |
+| `--model`             | `ollama-qwen3-14b`          | Downstream LLM used solely for formatting human-readable SRE explanations (e.g., `ollama-qwen3-14b`, `deepseek-r1-0528`) |
+| `--ollama-url`        | `http://localhost:11434/v1` | Local Ollama endpoint when using `ollama-*` explanation formatters                                                       |
 
-# LocaleXpert（参考文本已生成后）
-python -m evaluation.run_evaluation \
-    --log experiments_localexpert.log \
-    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
-    --ref-input evaluation/reference_texts_localexpert
+### Supported Multivariate Prior Backbones (`anomaly_detection/`)
+
+| Method               | Venue      | Core Architecture                                        | Default Window | Default LR |
+| :------------------- | :--------- | :------------------------------------------------------- | :------------: | :--------: |
+| `tranad` _(Default)_ | VLDB 2022  | Two-phase self-conditioning Transformer                  |       10       |   `1e-3`   |
+| `usad`               | KDD 2020   | Dual autoencoders with adversarial training              |       5        |   `1e-4`   |
+| `omnianomaly`        | KDD 2019   | Stochastic GRU + planar normalizing flow VAE             |       1        |   `2e-3`   |
+| `mad_gan`            | ICANN 2019 | Recurrent LSTM Generator & Discriminator GAN             |       5        |   `1e-4`   |
+| `mscred`             | AAAI 2019  | Multi-scale signature matrix ConvLSTM auto-encoder       |      Auto      |   `1e-4`   |
+| `gdn`                | AAAI 2021  | Graph Deviation Network (multi-head structure attention) |       5        |   `1e-4`   |
+| `mtad_gat`           | ICDM 2020  | Joint feature-oriented & time-oriented GAT + GRU         |      Auto      |   `1e-4`   |
+
+---
+
+## 📝 Citation
+
+If you find **Dual-RCL** or this repository useful in your research, please consider citing our paper:
+
+```bibtex
+@inproceedings{wang2026dualrcl,
+  author    = {Wang, Dianlin and Li, Tun and Wang, Shangwen and Han, Yue and Zhang, Zhuo and Lei, Yan and Mao, Xiaoguang},
+  title     = {{Dual-RCL}: Anchor-Guided Confidence Voting over Dual Causal and Diverse Evidence for Microservice Root Cause Localization},
+  booktitle = {IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
+  year      = {2026}
+}
 ```
-
-#### ③ 完整评估（BLEU-4 / ROUGE-L / G-sim / W-rate）—— 需要 LLM 调用，耗时较长
-
-```bash
-# DualChannel 完整评估
-python -m evaluation.run_evaluation \
-    --log experiments_dualchannel.log \
-    --gt-pkl-dir Datasets/GAIA/fault_injection_tracerank/ \
-    --ref-input evaluation/reference_texts_dualchannel \
-    --gsim --gsim-model glm-4.7 \
-    --compute-wrate \
-    --methods-log "DualChannel=experiments_dualchannel.log" \
-                  "LocaleXpert=experiments_localexpert.log" \
-    --voter-model glm-4.7 \
-    --model-name glm-4.7
-```
-
-#### ④ 一键脚本（实验 + 自动评估）
-
-```bash
-# DualChannel：运行实验后自动生成参考文本 + G-sim + W-rate
-nohup bash experiments_dualchannel.sh > experiments_dualchannel.log 2>&1 &
-
-# LocaleXpert：运行实验后自动生成参考文本 + G-sim + W-rate
-nohup bash experiments_localexpert.sh > experiments_localexpert.log 2>&1 &
-```
-
-#### ⑤ 监控评估进度
-
-```bash
-# 查看后台评估日志
-tail -f evaluation_full_dualchannel.log
-
-# 查看已生成的参考文本
-ls -la evaluation/reference_texts_dualchannel/
-```
-
-#### 评估参数说明
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--log` | (必需，与 `--log-dir` 二选一) | 单个实验日志文件路径（nohup 输出） |
-| `--log-dir` | (必需，与 `--log` 二选一) | 包含多个日志文件的目录 |
-| `--gt-pkl-dir` | `Datasets/GAIA/fault_injection_tracerank` | Ground truth pkl 文件目录 |
-| `--generate-references` | `False` | 用 LLM 生成专家参考文本（首次需要） |
-| `--ref-model` | `glm-4.7` | 生成参考文本的 LLM 模型 |
-| `--ref-output` | `evaluation/reference_texts` | 参考文本输出目录 |
-| `--ref-input` | `None` | 加载已有的参考文本（跳过生成） |
-| `--gsim` | `False` | 计算 G-sim（LLM-as-Judge 语义相似度） |
-| `--gsim-model` | `glm-4.7` | G-sim 评判模型 |
-| `--compute-wrate` | `False` | 计算 W-rate（LLM 投票胜率） |
-| `--methods-log` | `None` | 各方法日志路径，格式：`名称=路径` |
-| `--voter-model` | `glm-4.7` | LLM 投票模型 |
-| `--model-name` | `glm-4.7` | 实验使用的 LLM 名称 |
