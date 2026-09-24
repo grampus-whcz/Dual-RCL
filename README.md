@@ -236,16 +236,3 @@ python sweep_fusion_weights_ccf.py
 | `mtad_gat`           | ICDM 2020  | Joint feature-oriented & time-oriented GAT + GRU         |      Auto      |   `1e-4`   |
 
 ---
-
-## 📝 Citation
-
-If you find **Dual-RCL** or this repository useful in your research, please consider citing our paper:
-
-```bibtex
-@inproceedings{wang2026dualrcl,
-  author    = {Wang, Dianlin and Li, Tun and Wang, Shangwen and Han, Yue and Zhang, Zhuo and Lei, Yan and Mao, Xiaoguang},
-  title     = {{Dual-RCL}: Anchor-Guided Confidence Voting over Dual Causal and Diverse Evidence for Microservice Root Cause Localization},
-  booktitle = {IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
-  year      = {2026}
-}
-```
