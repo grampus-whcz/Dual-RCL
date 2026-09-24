@@ -234,5 +234,3 @@ python sweep_fusion_weights_ccf.py
 | `mscred`             | AAAI 2019  | Multi-scale signature matrix ConvLSTM auto-encoder       |      Auto      |   `1e-4`   |
 | `gdn`                | AAAI 2021  | Graph Deviation Network (multi-head structure attention) |       5        |   `1e-4`   |
 | `mtad_gat`           | ICDM 2020  | Joint feature-oriented & time-oriented GAT + GRU         |      Auto      |   `1e-4`   |
-
----
