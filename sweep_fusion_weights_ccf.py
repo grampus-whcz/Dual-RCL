@@ -80,6 +80,9 @@ def parse_log(path):
         mm = re.search(r"Conflict scenario:\s*(\w+)", line)
         if mm:
             cur.setdefault("scenario", mm.group(1))
+        if re.search(r"TVDiag-only fallback|Causal walk failed", line):
+            cur["fallback"] = True
+            continue
         mm = re.search(r"Fused root services(?:\s*\(confidence-vote\))?:\s*(\[.*?\])", line)
         if mm:
             try:
@@ -212,10 +215,19 @@ def hit(preds, cands, k):
     return any(any(c in x for c in cands) for x in preds[:k])
 
 
-def sweep(cases, heads):
+def sweep(cases, heads, gamma_map=None, use_real_gamma=False):
     sys.path.insert(0, PROJ)
     import run as run_mod
     fusion = run_mod.confidence_vote_fusion
+
+    def get_gamma_for(key, head, c):
+        if use_real_gamma and gamma_map:
+            ent = gamma_map.get(key)
+            if ent and ent.get("gamma"):
+                g = np.array(ent["gamma"], dtype=float)
+                if len(g) == len(head):
+                    return g
+        return gamma_proxy(head, c.get("uni_metrics", ""))
 
     test_gt = load_test_gt_paper()
     val_gt = load_val_gt()
@@ -226,37 +238,36 @@ def sweep(cases, heads):
     for k in test_order:
         test_fold[k.rsplit("|", 1)[1][-4:]] = k
 
-    def run_point(**kw):
+    def run_point(scenario_override="__online__", **kw):
         params = dict(DEFAULTS)
         params.update(kw)
         res = {"test": {1: 0, 3: 0, 5: 0}, "val": {1: 0, 3: 0, 5: 0}}
         n_test = n_val = 0
         f2_m1 = f2_m5 = f2_tot = 0
-        # test
-        fused_at_hhmm = {}
         for hhmm, key in test_fold.items():
             c, head = cases[key], heads.get(key)
             if not c.get("tvdig") or not head:
                 continue
-            gamma = gamma_proxy(head, c.get("uni_metrics", ""))
-            f, _, _ = fusion(tvdig_root_services=c["tvdig"],
-                             mepfl_root_services=c.get("mepfl", [])[:5],
-                             dual_root_metrics=c.get("uni_metrics", ""),
-                             data_head=head, gamma=gamma,
-                             scenario=c.get("scenario"), top_k=5, **params)
-            fused_at_hhmm[hhmm] = f
+            if c.get("fallback"):
+                f = list(c["tvdig"])[:5]  # online TVDiag-only fallback: pinned
+            else:
+                gamma = get_gamma_for(key, head, c)
+                scen = c.get("scenario") if scenario_override == "__online__" else scenario_override
+                f, _, _ = fusion(tvdig_root_services=c["tvdig"],
+                                 mepfl_root_services=c.get("mepfl", [])[:5],
+                                 dual_root_metrics=c.get("uni_metrics", ""),
+                                 data_head=head, gamma=gamma,
+                                 scenario=scen, top_k=5, **params)
             if hhmm in test_gt:
                 n_test += 1
                 for k in (1, 3, 5):
                     res["test"][k] += hit(f, test_gt[hhmm], k)
-            # fidelity at defaults vs logged fused
-            if not any(kw) and c.get("fused"):
+            if scenario_override == "__online__" and not kw and c.get("fused"):
                 f2_tot += 1
                 if f[:1] == c["fused"][:1]:
                     f2_m1 += 1
                 if f[:5] == c["fused"][:5]:
                     f2_m5 += 1
-        # validation
         for key, c in sorted(cases.items()):
             pref, inner = key.split("|", 1)
             if not pref.startswith("0320"):
@@ -268,12 +279,16 @@ def sweep(cases, heads):
             gtc = val_gt.get((pref, hhmm))
             if not gtc:
                 continue
-            gamma = gamma_proxy(head, c.get("uni_metrics", ""))
-            f, _, _ = fusion(tvdig_root_services=c["tvdig"],
-                             mepfl_root_services=c.get("mepfl", [])[:5],
-                             dual_root_metrics=c.get("uni_metrics", ""),
-                             data_head=head, gamma=gamma,
-                             scenario=c.get("scenario"), top_k=5, **params)
+            if c.get("fallback"):
+                f = list(c["tvdig"])[:5]
+            else:
+                gamma = get_gamma_for(key, head, c)
+                scen = c.get("scenario") if scenario_override == "__online__" else scenario_override
+                f, _, _ = fusion(tvdig_root_services=c["tvdig"],
+                                 mepfl_root_services=c.get("mepfl", [])[:5],
+                                 dual_root_metrics=c.get("uni_metrics", ""),
+                                 data_head=head, gamma=gamma,
+                                 scenario=scen, top_k=5, **params)
             n_val += 1
             for k in (1, 3, 5):
                 res["val"][k] += hit(f, gtc, k)
@@ -283,7 +298,8 @@ def sweep(cases, heads):
                "val": {f"AC@{k}": (round(res["val"][k] / n_val * 100, 1) if n_val else None)
                        for k in (1, 3, 5)}}
         fid = {"top1": round(f2_m1 / max(f2_tot, 1) * 100, 1),
-               "top5": round(f2_m5 / max(f2_tot, 1) * 100, 1), "n": f2_tot} if not any(kw) else None
+               "top5": round(f2_m5 / max(f2_tot, 1) * 100, 1), "n": f2_tot} \
+            if scenario_override == "__online__" and not kw else None
         return out, (n_test, n_val), fid
 
     results = {"defaults": {}, "sweeps": {}}
@@ -300,6 +316,67 @@ def sweep(cases, heads):
             print(f"{param}={v}: test {pt['test']}  val {pt['val']}")
             results["sweeps"][param].append({"value": v, **pt})
 
+    # Ablations (require real gamma): protection off + plain RRF baseline
+    if use_real_gamma and gamma_map:
+        def _rrf_fuse(c, head, gamma, k=5):
+            dual_metrics = re.findall(r'\(\d+\)([^,.)]+)', c.get("uni_metrics") or "")
+            dual_svcs = [run_mod._service_from_metric(m.strip()) for m in dual_metrics[:k] if m.strip()]
+            svc_gamma = {}
+            for idx, m in enumerate(head):
+                if idx < len(gamma):
+                    svc = run_mod._service_from_metric(m)
+                    svc_gamma[svc] = svc_gamma.get(svc, 0.0) + float(gamma[idx])
+            causal_ranked = [s for s, _ in sorted(svc_gamma.items(), key=lambda x: x[1], reverse=True)][:k]
+            scores = {}
+            for src in (c["tvdig"][:k], (c.get("mepfl") or [])[:k], dual_svcs[:k], causal_ranked[:k]):
+                for rank, svc in enumerate(src):
+                    scores[svc] = scores.get(svc, 0.0) + 1.0 / (60.0 + rank + 1)
+            return [s for s, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)][:k]
+
+        ablations = {}
+        pt, _, _ = run_point(scenario_override=None)
+        ablations["protection_off"] = pt
+        print(f"ablation protection_off: {pt}")
+        a = {"test": {1: 0, 3: 0, 5: 0}, "val": {1: 0, 3: 0, 5: 0}}
+        nt2 = nv2 = 0
+        for hhmm, key in test_fold.items():
+            c, head = cases[key], heads.get(key)
+            if not c.get("tvdig") or not head or hhmm not in test_gt:
+                continue
+            if c.get("fallback"):
+                f = list(c["tvdig"])[:5]
+            else:
+                gamma = get_gamma_for(key, head, c)
+                f = _rrf_fuse(c, head, gamma)
+            nt2 += 1
+            for k in (1, 3, 5):
+                a["test"][k] += hit(f, test_gt[hhmm], k)
+        for key, c in sorted(cases.items()):
+            pref, inner = key.split("|", 1)
+            if not pref.startswith("0320"):
+                continue
+            head = heads.get(key)
+            if not c.get("tvdig") or not head:
+                continue
+            hhmm = inner[-4:]
+            gtc = val_gt.get((pref, hhmm))
+            if not gtc:
+                continue
+            if c.get("fallback"):
+                f = list(c["tvdig"])[:5]
+            else:
+                gamma = get_gamma_for(key, head, c)
+                f = _rrf_fuse(c, head, gamma)
+            nv2 += 1
+            for k in (1, 3, 5):
+                a["val"][k] += hit(f, gtc, k)
+        ablations["rrf_baseline"] = {
+            "params": {"note": "plain RRF 1/(60+rank), no weights/protection"},
+            "test": {f"AC@{k}": (round(a["test"][k] / nt2 * 100, 1) if nt2 else None) for k in (1, 3, 5)},
+            "val": {f"AC@{k}": (round(a["val"][k] / nv2 * 100, 1) if nv2 else None) for k in (1, 3, 5)}}
+        print(f"ablation rrf_baseline: {ablations['rrf_baseline']}")
+        results["ablations"] = ablations
+
     os.makedirs(os.path.dirname(OUT_JSON), exist_ok=True)
     with open(OUT_JSON, "w") as f:
         json.dump(results, f, indent=1)
@@ -310,6 +387,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--collect", action="store_true", help="parse logs + rebuild data heads")
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--real-gamma", action="store_true",
+                    help="use re-derived gamma from replay_ccf_gamma.pkl (fallback: proxy)")
     args = ap.parse_args()
 
     cases = load_cases()
@@ -322,7 +401,14 @@ def main():
         if heads is None:
             with open(HEADS_PATH, "rb") as f:
                 heads = pickle.load(f)
-        sweep(cases, heads)
+        gamma_map = None
+        if args.real_gamma:
+            gp = os.path.join(PROJ, "replay_ccf_gamma.pkl")
+            with open(gp, "rb") as f:
+                gamma_map = pickle.load(f)
+            n_g = sum(1 for v in gamma_map.values() if v and v.get("gamma"))
+            print(f"[gamma] real gamma loaded: {n_g} valid entries")
+        sweep(cases, heads, gamma_map=gamma_map, use_real_gamma=args.real_gamma)
 
 
 if __name__ == "__main__":

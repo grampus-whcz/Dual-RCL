@@ -1,0 +1,44 @@
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:441: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/hub.py:123: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+/root/shared-nvme/.conda/envs/LocaleXpert_env/lib/python3.10/site-packages/transformers/utils/generic.py:309: UserWarning: torch.utils._pytree._register_pytree_node is deprecated. Please use torch.utils._pytree.register_pytree_node instead.
+  _torch_pytree._register_pytree_node(
+[cases] 305 logged cases (305 with tvdig rankings)
+[gamma] real gamma loaded: 305 valid entries
+defaults: {'params': {'w_causal': 0.3, 'w_mepfl': 0.4, 'w_dual': 0.3, 'alpha': 0.4}, 'test': {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}, 'val': {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}, 'fidelity_vs_logged': {'top1': 79.4, 'top5': 9.6, 'n': 218}, 'n_test': 218, 'n_val': 64}
+w_dual=0.1: test {'AC@1': 26.1, 'AC@3': 33.5, 'AC@5': 39.9}  val {'AC@1': 20.3, 'AC@3': 29.7, 'AC@5': 37.5}
+w_dual=0.2: test {'AC@1': 26.1, 'AC@3': 34.4, 'AC@5': 40.8}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+w_dual=0.3: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+w_dual=0.4: test {'AC@1': 26.1, 'AC@3': 36.7, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 37.5}
+w_dual=0.5: test {'AC@1': 26.1, 'AC@3': 36.7, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 37.5}
+w_dual=0.6: test {'AC@1': 26.1, 'AC@3': 37.2, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 37.5}
+w_dual=0.7: test {'AC@1': 26.1, 'AC@3': 36.7, 'AC@5': 42.2}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 35.9}
+w_dual=0.8: test {'AC@1': 26.1, 'AC@3': 36.2, 'AC@5': 42.7}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 35.9}
+w_dual=0.9: test {'AC@1': 26.1, 'AC@3': 36.2, 'AC@5': 43.1}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 35.9}
+w_mepfl=0.1: test {'AC@1': 26.1, 'AC@3': 37.6, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 32.8}
+w_mepfl=0.2: test {'AC@1': 26.1, 'AC@3': 37.2, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 23.4, 'AC@5': 37.5}
+w_mepfl=0.3: test {'AC@1': 26.1, 'AC@3': 36.7, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 37.5}
+w_mepfl=0.4: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+w_mepfl=0.5: test {'AC@1': 25.7, 'AC@3': 34.9, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 29.7, 'AC@5': 35.9}
+w_mepfl=0.6: test {'AC@1': 24.3, 'AC@3': 33.9, 'AC@5': 41.3}  val {'AC@1': 18.8, 'AC@3': 29.7, 'AC@5': 37.5}
+w_mepfl=0.7: test {'AC@1': 24.3, 'AC@3': 33.9, 'AC@5': 41.3}  val {'AC@1': 18.8, 'AC@3': 29.7, 'AC@5': 35.9}
+w_causal=0.1: test {'AC@1': 26.1, 'AC@3': 34.4, 'AC@5': 39.4}  val {'AC@1': 20.3, 'AC@3': 29.7, 'AC@5': 35.9}
+w_causal=0.2: test {'AC@1': 26.1, 'AC@3': 34.9, 'AC@5': 40.8}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+w_causal=0.3: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+w_causal=0.4: test {'AC@1': 26.1, 'AC@3': 37.2, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 35.9}
+w_causal=0.5: test {'AC@1': 26.1, 'AC@3': 38.1, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 25.0, 'AC@5': 35.9}
+alpha=0.0: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 40.4}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 39.1}
+alpha=0.1: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 37.5}
+alpha=0.2: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 37.5}
+alpha=0.3: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.7}  val {'AC@1': 20.3, 'AC@3': 26.6, 'AC@5': 37.5}
+alpha=0.4: test {'AC@1': 26.1, 'AC@3': 35.3, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+alpha=0.5: test {'AC@1': 26.1, 'AC@3': 34.9, 'AC@5': 41.3}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+alpha=0.6: test {'AC@1': 26.1, 'AC@3': 34.9, 'AC@5': 40.8}  val {'AC@1': 20.3, 'AC@3': 28.1, 'AC@5': 37.5}
+alpha=0.7: test {'AC@1': 24.3, 'AC@3': 34.9, 'AC@5': 40.8}  val {'AC@1': 18.8, 'AC@3': 28.1, 'AC@5': 37.5}
+alpha=0.8: test {'AC@1': 24.3, 'AC@3': 34.9, 'AC@5': 40.8}  val {'AC@1': 18.8, 'AC@3': 28.1, 'AC@5': 37.5}
+ablation protection_off: {'params': {'w_causal': 0.3, 'w_mepfl': 0.4, 'w_dual': 0.3, 'alpha': 0.4}, 'test': {'AC@1': 20.2, 'AC@3': 34.4, 'AC@5': 40.4}, 'val': {'AC@1': 14.1, 'AC@3': 26.6, 'AC@5': 35.9}}
+ablation rrf_baseline: {'params': {'note': 'plain RRF 1/(60+rank), no weights/protection'}, 'test': {'AC@1': 11.9, 'AC@3': 28.0, 'AC@5': 39.0}, 'val': {'AC@1': 4.7, 'AC@3': 20.3, 'AC@5': 28.1}}
+
+Sweep results written to /root/shared-nvme/work/code/RCA/2026/SoC-RCA/tex_ICASSP/param_sensitivity_results.json
+Saved /root/shared-nvme/work/code/RCA/2026/SoC-RCA/tex_ICASSP/fig_param_sensitivity.pdf
